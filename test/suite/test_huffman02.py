@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -28,7 +28,7 @@
 
 import os
 from suite_subprocess import suite_subprocess
-from wtscenario import multiply_scenarios, number_scenarios
+from wtscenario import make_scenarios
 import wiredtiger, wttest
 
 # test_huffman02.py
@@ -48,7 +48,7 @@ class test_huffman02(wttest.WiredTigerTestCase, suite_subprocess):
         ('file', dict(uri='file:huff')),
         ('table', dict(uri='table:huff')),
     ]
-    scenarios = number_scenarios(multiply_scenarios('.',type,huffkey, huffval))
+    scenarios = make_scenarios(type, huffkey, huffval)
 
     def test_huffman(self):
         if self.keybad or self.valbad:

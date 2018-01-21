@@ -7,6 +7,7 @@ Atomicity
 BLOBs
 CFLAGS
 CPPFLAGS
+CRC
 Cheng
 Christoph
 Collet's
@@ -14,6 +15,8 @@ Coverity
 Coverity's
 DB's
 DBTs
+DHANDLE
+DONTNEED
 Datastore
 DbCursor
 DbEnv
@@ -24,6 +27,7 @@ EBUSY
 ECMA
 EINVAL
 ENCRYPTOR
+ENOTSUP
 EmpId
 Encryptors
 Facebook
@@ -47,6 +51,7 @@ LDFLAGS
 LIBS
 LLVM
 LOGREC
+LRU
 LRVv
 LSB
 LSM
@@ -64,8 +69,10 @@ NOTFOUND
 NUMA
 NoSQL
 OPTYPE
+PPC
 PRELOAD
 README
+Rebalance
 RedHat
 RepMgr
 Riak
@@ -76,7 +83,9 @@ SCons
 Seward's
 SiH
 TXT
+UNC
 URIs
+WILLNEED
 WiredTiger
 WiredTiger's
 WiredTigerCheckpoint
@@ -88,6 +97,7 @@ WiredTigerStat
 WiredTigerTestCase
 Yann
 Za
+Zstd
 aR
 abstime
 ack'ed
@@ -120,6 +130,7 @@ boolean
 booleans
 br
 btree
+btrees
 bufs
 builtin
 builtins
@@ -149,6 +160,7 @@ control's
 copydoc
 cpp
 crashless
+crc
 cursortype
 customerABC
 cv
@@ -157,6 +169,7 @@ dNLen
 dNOff
 dT
 dataN
+database's
 dataitem
 dataset
 datasets
@@ -173,6 +186,10 @@ desc
 destructor
 destructors
 dev
+devdoc
+dhandle
+disjunction
+disjunctions
 distclean
 dl
 dll
@@ -194,16 +211,21 @@ endcond
 endian
 endif
 endinternal
+enduml
 english
 env
 eof
+eq
 erlang
 errno
 exe
 fadvise
 failchk
+fallocate
 fd's
 fdatasync
+fextend
+fh
 fieldname
 fileID
 fileformats
@@ -218,8 +240,11 @@ forw
 fput
 freelist
 fsync
+ftruncate
+fvisibility
 gcc
 gdbm
+ge
 getKey
 getValue
 getopt
@@ -260,6 +285,7 @@ keyvalue
 kvs
 lang
 lastname
+le
 len
 leveldb
 li
@@ -295,6 +321,7 @@ memalloc
 memfree
 memp
 metadata
+metatracking
 minkey
 mixin
 mixins
@@ -323,9 +350,11 @@ nocase
 nocasecoll
 nodup
 noflush
+nolock
 nolocking
 nommap
 nop
+noraw
 nosql
 nosync
 notgranted
@@ -351,9 +380,11 @@ perf
 petabyte
 pget
 php
+plantuml
 png
 posix
 pre
+prepends
 primary's
 printf
 printlog
@@ -372,9 +403,11 @@ rVv
 rdbms
 rdlock
 readlock
+readonly
 realclean
 realloc
 realloc'd
+rebalance
 recno
 recnoN
 recnum
@@ -395,6 +428,7 @@ runtime
 rwlock
 sHQ
 sHq
+sanitization
 scalable
 scanf
 schemas
@@ -412,7 +446,9 @@ sql
 src
 ssd
 startsync
+startuml
 statlog
+stderr
 str
 strerror
 strftime
@@ -469,6 +505,7 @@ valuefmt
 vec
 versa
 vm
+vpmsum
 warmup
 whitespace
 wiredtiger
@@ -481,3 +518,5 @@ wtstats
 xa
 yieldcpu
 zlib
+zseries
+zstd

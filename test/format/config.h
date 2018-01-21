@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -37,7 +37,7 @@ typedef struct {
 	/* Value is a boolean, yes if roll of 1-to-100 is <= CONFIG->min. */
 #define	C_BOOL		0x001
 
-	/* Not a simple randomization, handle outside the main loop. */ 
+	/* Not a simple randomization, handle outside the main loop. */
 #define	C_IGNORE	0x002
 
 	/* Value was set from command-line or file, ignore for all runs. */
@@ -58,21 +58,24 @@ typedef struct {
 } CONFIG;
 
 #define	COMPRESSION_LIST						\
-	"(none | bzip | bzip-raw | lz4 | lz4-noraw | lzo | none | "	\
-	"snappy | zlib | zlib-noraw)"
+	"(none | lz4 | lz4-noraw | snappy | zlib | zlib-noraw | zstd)"
 
 static CONFIG c[] = {
 	{ "abort",
 	  "if timed run should drop core",			/* 0% */
 	  C_BOOL, 0, 0, 0, &g.c_abort, NULL },
 
+	{ "alter",
+	  "if altering the table is enabled",			/* 10% */
+	  C_BOOL, 10, 0, 0, &g.c_alter, NULL },
+
 	{ "auto_throttle",
 	  "if LSM inserts are throttled",			/* 90% */
 	  C_BOOL, 90, 0, 0, &g.c_auto_throttle, NULL },
 
-	{ "firstfit",
-	  "if allocation is firstfit",				/* 10% */
-	  C_BOOL, 10, 0, 0, &g.c_firstfit, NULL },
+	{ "backups",
+	  "if backups are enabled",				/* 20% */
+	  C_BOOL, 20, 0, 0, &g.c_backups, NULL },
 
 	{ "bitcnt",
 	  "number of bits for fixed-length column-store files",
@@ -98,13 +101,25 @@ static CONFIG c[] = {
 	  "size of the cache in MB",
 	  0x0, 1, 100, 100 * 1024, &g.c_cache, NULL },
 
+	{ "cache_minimum",
+	  "minimum size of the cache in MB",
+	  C_IGNORE, 1, 0, 100 * 1024, &g.c_cache_minimum, NULL },
+
 	{ "checkpoints",
-	  "if periodic checkpoints are done",			/* 95% */
-	  C_BOOL, 95, 0, 0, &g.c_checkpoints, NULL },
+	  "type of checkpoints (on | off | wiredtiger)",
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_checkpoint},
+
+	{ "checkpoint_log_size",
+	  "MB of log to wait if wiredtiger checkpoints configured",
+	  0x0, 20, 200, 1024, &g.c_checkpoint_log_size, NULL},
+
+	{ "checkpoint_wait",
+	  "seconds to wait if wiredtiger checkpoints configured",
+	  0x0, 5, 100, 3600, &g.c_checkpoint_wait, NULL},
 
 	{ "checksum",
 	  "type of checksums (on | off | uncompressed)",
-	  C_IGNORE|C_STRING, 1, 3, 3, NULL, &g.c_checksum },
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_checksum },
 
 	{ "chunk_size",
 	  "LSM chunk size in MB",
@@ -124,15 +139,19 @@ static CONFIG c[] = {
 
 	{ "data_source",
 	  "data source (file | helium | kvsbdb | lsm | table)",
-	  C_IGNORE | C_STRING, 0, 0, 0, NULL, &g.c_data_source },
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_data_source },
 
 	{ "delete_pct",
 	  "percent operations that are deletes",
-	  0x0, 0, 45, 90, &g.c_delete_pct, NULL },
+	  C_IGNORE, 0, 0, 100, &g.c_delete_pct, NULL },
 
 	{ "dictionary",
 	  "if values are dictionary compressed",		/* 20% */
 	  C_BOOL, 20, 0, 0, &g.c_dictionary, NULL },
+
+	{ "direct_io",
+	  "if direct I/O is configured for data objects",	/* 0% */
+	  C_IGNORE|C_BOOL, 0, 0, 1, &g.c_direct_io, NULL },
 
 	{ "encryption",
 	  "type of encryption (none | rotn-7)",
@@ -144,11 +163,11 @@ static CONFIG c[] = {
 
 	{ "file_type",
 	  "type of store to create (fix | var | row)",
-	  C_IGNORE|C_STRING, 1, 3, 3, NULL, &g.c_file_type },
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_file_type },
 
-	{ "backups",
-	  "if backups are enabled",				/* 5% */
-	  C_BOOL, 5, 0, 0, &g.c_backups, NULL },
+	{ "firstfit",
+	  "if allocation is firstfit",				/* 10% */
+	  C_BOOL, 10, 0, 0, &g.c_firstfit, NULL },
 
 	{ "huffman_key",
 	  "if keys are huffman encoded",			/* 20% */
@@ -158,9 +177,17 @@ static CONFIG c[] = {
 	  "if values are huffman encoded",			/* 20% */
 	  C_BOOL, 20, 0, 0, &g.c_huffman_value, NULL },
 
+	{ "independent_thread_rng",
+	  "if thread RNG space is independent",			/* 75% */
+	  C_BOOL, 75, 0, 0, &g.c_independent_thread_rng, NULL },
+
+	{ "in_memory",
+	  "if in-memory configured",
+	  C_IGNORE|C_BOOL, 0, 0, 1, &g.c_in_memory, NULL },
+
 	{ "insert_pct",
 	  "percent operations that are inserts",
-	  0x0, 0, 45, 90, &g.c_insert_pct, NULL },
+	  C_IGNORE, 0, 0, 100, &g.c_insert_pct, NULL },
 
 	{ "internal_key_truncation",
 	  "if internal keys are truncated",			/* 95% */
@@ -173,7 +200,7 @@ static CONFIG c[] = {
 	{ "isolation",
 	  "isolation level "
 	  "(random | read-uncommitted | read-committed | snapshot)",
-	  C_IGNORE|C_STRING, 1, 4, 4, NULL, &g.c_isolation },
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_isolation },
 
 	{ "key_gap",
 	  "gap between instantiated keys on a Btree page",
@@ -187,29 +214,37 @@ static CONFIG c[] = {
 	  "minimum size of keys",
 	  0x0, 10, 32, 256, &g.c_key_min, NULL },
 
-	{ "leak_memory",
-	  "if memory should be leaked on close",
-	  C_BOOL, 0, 0, 0, &g.c_leak_memory, NULL },
-
 	{ "leaf_page_max",
 	  "maximum size of Btree leaf nodes",
 	  0x0, 9, 17, 27, &g.c_leaf_page_max, NULL },
 
-	{ "logging",
-	  "if logging configured",				/* 30% */
-	  C_BOOL, 30, 0, 0, &g.c_logging, NULL },
+	{ "leak_memory",
+	  "if memory should be leaked on close",
+	  C_BOOL, 0, 0, 0, &g.c_leak_memory, NULL },
 
-	{ "logging_compression",
-	  "type of logging compression " COMPRESSION_LIST,
-	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_logging_compression },
+	{ "logging",
+	  "if logging configured",				/* 50% */
+	  C_BOOL, 50, 0, 0, &g.c_logging, NULL },
 
 	{ "logging_archive",
 	  "if log file archival configured",			/* 50% */
 	  C_BOOL, 50, 0, 0, &g.c_logging_archive, NULL },
 
+	{ "logging_compression",
+	  "type of logging compression " COMPRESSION_LIST,
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_logging_compression },
+
+	{ "logging_file_max",
+	  "maximum log file size in KB",
+	  0x0, 100, 512000, 2097152, &g.c_logging_file_max, NULL },
+
 	{ "logging_prealloc",
 	  "if log file pre-allocation configured",		/* 50% */
 	  C_BOOL, 50, 0, 0, &g.c_logging_prealloc, NULL },
+
+	{ "long_running_txn",
+	  "if a long-running transaction configured",		/* 0% */
+	  C_BOOL, 0, 0, 0, &g.c_long_running_txn, NULL },
 
 	{ "lsm_worker_threads",
 	  "the number of LSM worker threads",
@@ -223,6 +258,10 @@ static CONFIG c[] = {
 	  "configure for mmap operations",			/* 90% */
 	  C_BOOL, 90, 0, 0, &g.c_mmap, NULL },
 
+	{ "modify_pct",
+	  "percent operations that are value modifications",
+	  C_IGNORE, 0, 0, 100, &g.c_modify_pct, NULL },
+
 	{ "ops",
 	  "the number of modification operations done per run",
 	  0x0, 0, M(2), M(100), &g.c_ops, NULL },
@@ -234,6 +273,18 @@ static CONFIG c[] = {
 	{ "prefix_compression_min",
 	  "minimum gain before prefix compression is used",
 	  0x0, 0, 8, 256, &g.c_prefix_compression_min, NULL },
+
+	{ "quiet",
+	  "quiet run (same as -q)",
+	  C_IGNORE|C_BOOL, 0, 0, 1, &g.c_quiet, NULL },
+
+	{ "read_pct",
+	  "percent operations that are reads",
+	  C_IGNORE, 0, 0, 100, &g.c_read_pct, NULL },
+
+	{ "rebalance",
+	  "rebalance testing",					/* 100% */
+	  C_BOOL, 100, 1, 0, &g.c_rebalance, NULL },
 
 	{ "repeat_data_pct",
 	  "percent duplicate values in row- or var-length column-stores",
@@ -249,11 +300,15 @@ static CONFIG c[] = {
 
 	{ "runs",
 	  "the number of runs",
-	  C_IGNORE, 0, UINT_MAX, UINT_MAX, &g.c_runs, NULL },
+	  C_IGNORE, 0, 0, UINT_MAX, &g.c_runs, NULL },
+
+	{ "salvage",
+	  "salvage testing",					/* 100% */
+	  C_BOOL, 100, 1, 0, &g.c_salvage, NULL },
 
 	{ "split_pct",
 	  "page split size as a percentage of the maximum page size",
-	  0x0, 40, 85, 85, &g.c_split_pct, NULL },
+	  0x0, 50, 100, 100, &g.c_split_pct, NULL },
 
 	{ "statistics",
 	  "maintain statistics",				/* 20% */
@@ -268,8 +323,16 @@ static CONFIG c[] = {
 	  0x0, 1, 32, 128, &g.c_threads, NULL },
 
 	{ "timer",
-	  "maximum time to run in minutes (default 20 minutes)",
-	  C_IGNORE, 0, UINT_MAX, UINT_MAX, &g.c_timer, NULL },
+	  "maximum time to run in minutes",
+	  C_IGNORE, 0, 0, UINT_MAX, &g.c_timer, NULL },
+
+	{ "transaction_timestamps",				/* 10% */
+	  "enable transaction timestamp support",
+	  C_BOOL, 10, 0, 0, &g.c_txn_timestamps, NULL },
+
+	{ "transaction-frequency",
+	  "percent operations done inside an explicit transaction",
+	  0x0, 1, 100, 100, &g.c_txn_freq, NULL },
 
 	{ "value_max",
 	  "maximum size of values",
@@ -279,13 +342,17 @@ static CONFIG c[] = {
 	  "minimum size of values",
 	  0x0, 0, 20, 4096, &g.c_value_min, NULL },
 
+	{ "verify",
+	  "to regularly verify during a run",			/* 100% */
+	  C_BOOL, 100, 1, 0, &g.c_verify, NULL },
+
 	{ "wiredtiger_config",
 	  "configuration string used to wiredtiger_open",
 	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_config_open },
 
 	{ "write_pct",
-	  "percent operations that are writes",
-	  0x0, 0, 90, 90, &g.c_write_pct, NULL },
+	  "percent operations that are value updates",
+	  C_IGNORE, 0, 0, 100, &g.c_write_pct, NULL },
 
 	{ NULL, NULL, 0x0, 0, 0, 0, NULL, NULL }
 };

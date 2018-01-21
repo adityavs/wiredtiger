@@ -116,10 +116,6 @@ The WiredTiger software supports some additional configuration options:
 Configure WiredTiger to sleep and wait for a debugger to attach on failure.
 <b>DO NOT</b> configure this option in production environments.
 
-@par \c --enable-bzip2
-Configure WiredTiger for <a href="http://www.bzip.org/">bzip2</a>
-compression; see @ref compression for more information.
-
 @par \c --enable-diagnostic
 Configure WiredTiger to perform various run-time diagnostic tests.
 <b>DO NOT</b> configure this option in production environments.
@@ -154,10 +150,14 @@ Configure WiredTiger to support the \c verbose configuration string to
 Configure WiredTiger for <a href="http://www.zlib.net/">zlib</a>
 compression; see @ref compression for more information.
 
+@par \c --enable-zstd
+Configure WiredTiger for <a href="https://github.com/facebook/zstd">Zstd</a>
+compression; see @ref compression for more information.
+
 @par <code>--with-builtins</code>
 Configure WiredTiger to include support for extensions in the main library.
 This avoids requiring additional libraries for supported extensions. Currently
-supported options are \c lz4, \c snappy and \c zlib.
+supported options are \c lz4, \c snappy, \c zlib and \c zstd.
 
 @par <code>--with-python-prefix</code>
 Configure WiredTiger to install Python libraries to a non-standard Python

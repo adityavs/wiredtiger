@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -28,17 +28,9 @@
  * ex_async.c
  * 	demonstrates how to use the asynchronous API.
  */
-#include <errno.h>
-#include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
-#ifndef _WIN32
-#include <unistd.h>
-#else
-#include "windows_shim.h"
-#endif
+#include <test_util.h>
 
-#include <wiredtiger.h>
+static const char *home;
 
 #if defined(_lint)
 #define	ATOMIC_ADD(v, val)      ((v) += (val), (v))
@@ -48,7 +40,6 @@
 #define	ATOMIC_ADD(v, val)      __sync_add_and_fetch(&(v), val)
 #endif
 
-static const char * const home = NULL;
 static int global_error = 0;
 
 /*! [async example callback implementation] */
@@ -66,11 +57,8 @@ async_callback(WT_ASYNC_CALLBACK *cb,
 	WT_ITEM k, v;
 	const char *key, *value;
 	uint64_t id;
-	int ret;
 
 	(void)flags;				/* Unused */
-
-	ret = 0;
 
 	/*! [async get type] */
 	/* Retrieve the operation's WT_ASYNC_OPTYPE type. */
@@ -95,17 +83,17 @@ async_callback(WT_ASYNC_CALLBACK *cb,
 	/* If doing a search, retrieve the key/value pair. */
 	if (type == WT_AOP_SEARCH) {
 		/*! [async get the operation's string key] */
-		ret = op->get_key(op, &k);
+		error_check(op->get_key(op, &k));
 		key = k.data;
 		/*! [async get the operation's string key] */
 		/*! [async get the operation's string value] */
-		ret = op->get_value(op, &v);
+		error_check(op->get_value(op, &v));
 		value = v.data;
 		/*! [async get the operation's string value] */
 		ATOMIC_ADD(asynckey->num_keys, 1);
 		printf("Id %" PRIu64 " got record: %s : %s\n", id, key, value);
 	}
-	return (ret);
+	return (0);
 }
 /*! [async example callback implementation] */
 
@@ -114,7 +102,7 @@ static ASYNC_KEYS ex_asynckeys = { {async_callback}, 0 };
 #define	MAX_KEYS	15
 
 int
-main(void)
+main(int argc, char *argv[])
 {
 	WT_ASYNC_OP *op;
 	WT_CONNECTION *conn;
@@ -122,16 +110,18 @@ main(void)
 	int i, ret;
 	char k[MAX_KEYS][16], v[MAX_KEYS][16];
 
+	home = example_setup(argc, argv);
+
 	/*! [async example connection] */
-	ret = wiredtiger_open(home, NULL,
+	error_check(wiredtiger_open(home, NULL,
 	    "create,cache_size=100MB,"
-	    "async=(enabled=true,ops_max=20,threads=2)", &conn);
+	    "async=(enabled=true,ops_max=20,threads=2)", &conn));
 	/*! [async example connection] */
 
 	/*! [async example table create] */
-	ret = conn->open_session(conn, NULL, NULL, &session);
-	ret = session->create(
-	    session, "table:async", "key_format=S,value_format=S");
+	error_check(conn->open_session(conn, NULL, NULL, &session));
+	error_check(session->create(
+	    session, "table:async", "key_format=S,value_format=S"));
 	/*! [async example table create] */
 
 	/* Insert a set of keys asynchronously. */
@@ -148,7 +138,7 @@ main(void)
 			if (ret == EBUSY)
 				sleep(1);
 			else
-				return (ret);
+				return (EXIT_FAILURE);
 		}
 		/*! [async handle allocation] */
 
@@ -158,31 +148,31 @@ main(void)
 		 * an asynchronous insert.
 		 */
 		/*! [async set the operation's string key] */
-		snprintf(k[i], sizeof(k), "key%d", i);
+		(void)snprintf(k[i], sizeof(k), "key%d", i);
 		op->set_key(op, k[i]);
 		/*! [async set the operation's string key] */
 
 		/*! [async set the operation's string value] */
-		snprintf(v[i], sizeof(v), "value%d", i);
+		(void)snprintf(v[i], sizeof(v), "value%d", i);
 		op->set_value(op, v[i]);
 		/*! [async set the operation's string value] */
 
-		ret = op->insert(op);
+		error_check(op->insert(op));
 		/*! [async insert] */
 	}
 
 	/*! [async flush] */
 	/* Wait for all outstanding operations to complete. */
-	ret = conn->async_flush(conn);
+	error_check(conn->async_flush(conn));
 	/*! [async flush] */
 
 	/*! [async compaction] */
 	/*
 	 * Compact a table asynchronously, limiting the run-time to 5 minutes.
 	 */
-	ret = conn->async_new_op(
-	    conn, "table:async", "timeout=300", &ex_asynckeys.iface, &op);
-	ret = op->compact(op);
+	error_check(conn->async_new_op(
+	    conn, "table:async", "timeout=300", &ex_asynckeys.iface, &op));
+	error_check(op->compact(op));
 	/*! [async compaction] */
 
 	/* Search for the keys we just inserted, asynchronously. */
@@ -198,7 +188,7 @@ main(void)
 			if (ret == EBUSY)
 				sleep(1);
 			else
-				return (ret);
+				return (EXIT_FAILURE);
 		}
 
 		/*! [async search] */
@@ -206,9 +196,9 @@ main(void)
 		 * Set the operation's string key and value, and then do
 		 * an asynchronous search.
 		 */
-		snprintf(k[i], sizeof(k), "key%d", i);
+		(void)snprintf(k[i], sizeof(k), "key%d", i);
 		op->set_key(op, k[i]);
-		ret = op->search(op);
+		error_check(op->search(op));
 		/*! [async search] */
 	}
 
@@ -216,9 +206,9 @@ main(void)
 	 * Connection close automatically does an async_flush so it will wait
 	 * for all queued search operations to complete.
 	 */
-	ret = conn->close(conn, NULL);
+	error_check(conn->close(conn, NULL));
 
-	printf("Searched for %d keys\n", ex_asynckeys.num_keys);
+	printf("Searched for %" PRIu32 " keys\n", ex_asynckeys.num_keys);
 
-	return (ret);
+	return (EXIT_SUCCESS);
 }

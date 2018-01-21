@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -326,6 +326,22 @@ public static int cursor_ops(Session session)
     /*! [Display an error] */
     }
 
+    {
+    /*! [Display an error thread safe] */
+    try {
+        String key = "non-existent key";
+        cursor.putKeyString(key);
+        if ((ret = cursor.remove()) != 0) {
+            System.err.println(
+                "cursor.remove: " + wiredtiger.wiredtiger_strerror(ret));
+            return (ret);
+        }
+    } catch (WiredTigerException wte) {  /* Catch severe errors. */
+        System.err.println("cursor.remove exception: " + wte);
+    }
+    /*! [Display an error thread safe] */
+    }
+
     /*! [Close the cursor] */
     ret = cursor.close();
     /*! [Close the cursor] */
@@ -516,12 +532,6 @@ session_ops(Session session)
      * the code snippets, use if (false) to avoid running it.
      */
     if (false) {  // MIGHT_NOT_RUN
-    /*! [Create a bzip2 compressed table] */
-    ret = session.create("table:mytable",
-        "block_compressor=bzip2,key_format=S,value_format=S");
-    /*! [Create a bzip2 compressed table] */
-    ret = session.drop("table:mytable", null);
-
     /*! [Create a lz4 compressed table] */
     ret = session.create("table:mytable",
         "block_compressor=lz4,key_format=S,value_format=S");
@@ -538,6 +548,12 @@ session_ops(Session session)
     ret = session.create("table:mytable",
         "block_compressor=zlib,key_format=S,value_format=S");
     /*! [Create a zlib compressed table] */
+    ret = session.drop("table:mytable", null);
+
+    /*! [Create a zstd compressed table] */
+    ret = session.create("table:mytable",
+        "block_compressor=zstd,key_format=S,value_format=S");
+    /*! [Create a zstd compressed table] */
     ret = session.drop("table:mytable", null);
     } // if (false)
 
@@ -868,6 +884,18 @@ backup(Session session)
                 ": backup failed: " + ex.toString());
         }
     /*! [backup]*/
+        try {
+	    /*! [incremental backup]*/
+            /* Open the backup data source for incremental backup. */
+            cursor = session.open_cursor("backup:", null, "target=(\"log:\")");
+	    /*! [incremental backup]*/
+
+            ret = cursor.close();
+        }
+        catch (Exception ex) {
+            System.err.println(progname +
+                ": incremental backup failed: " + ex.toString());
+        }
 
     /*! [backup of a checkpoint]*/
     ret = session.checkpoint("drop=(from=June01),name=June01");
@@ -899,13 +927,6 @@ allExample()
      * be installed, causing the open to fail.  The documentation requires
      * the code snippets, use if (false) to avoid running it.
      */
-    /*! [Configure bzip2 extension] */
-    conn = wiredtiger.open(home,
-        "create," +
-        "extensions=[/usr/local/lib/libwiredtiger_bzip2.so]");
-    /*! [Configure bzip2 extension] */
-    conn.close(null);
-
     /*! [Configure lz4 extension] */
     conn = wiredtiger.open(home,
         "create," +
@@ -925,6 +946,29 @@ allExample()
         "create," +
         "extensions=[/usr/local/lib/libwiredtiger_zlib.so]");
     /*! [Configure zlib extension] */
+    conn.close(null);
+
+    /*! [Configure zlib extension with compression level] */
+    conn = wiredtiger.open(home,
+        "create," +
+        "extensions=[/usr/local/lib/" +
+	"libwiredtiger_zlib.so=[config=[compression_level=3]]]");
+    /*! [Configure zlib extension with compression level] */
+    conn.close(null);
+
+    /*! [Configure zstd extension] */
+    conn = wiredtiger.open(home,
+        "create," +
+        "extensions=[/usr/local/lib/libwiredtiger_zstd.so]");
+    /*! [Configure zstd extension] */
+    conn.close(null);
+
+    /*! [Configure zstd extension with compression level] */
+    conn = wiredtiger.open(home,
+        "create," +
+        "extensions=[/usr/local/lib/" +
+	"libwiredtiger_zstd.so=[config=[compression_level=9]]]");
+    /*! [Configure zstd extension with compression level] */
     conn.close(null);
 
     /*
@@ -973,6 +1017,10 @@ allExample()
     /*! [Statistics logging] */
     conn.close(null);
 
+    if (false) {  // MIGHT_NOT_RUN
+    /*
+     * Don't run this code, statistics logging doesn't yet support tables.
+     */
     /*! [Statistics logging with a table] */
     conn = wiredtiger.open(home,
         "create," +
@@ -980,23 +1028,13 @@ allExample()
     /*! [Statistics logging with a table] */
     conn.close(null);
 
-    /*! [Statistics logging with all tables] */
-    conn = wiredtiger.open(home,
-        "create,statistics_log=(sources=(\"table:\"))");
-    /*! [Statistics logging with all tables] */
-    conn.close(null);
-
-    if (false) {  // MIGHT_NOT_RUN
     /*
-     * This example code gets run, and a non-existent log file path might
-     * cause the open to fail.  The documentation requires code snippets,
-     * use if (false) to avoid running it.
+     * Don't run this code, statistics logging doesn't yet support indexes.
      */
-    /*! [Statistics logging with path] */
+    /*! [Statistics logging with a source type] */
     conn = wiredtiger.open(home,
-        "create," +
-        "statistics_log=(wait=120,path=/log/log.%m.%d.%y)");
-    /*! [Statistics logging with path] */
+        "create,statistics_log=(sources=(\"index:\"))");
+    /*! [Statistics logging with a source type] */
     conn.close(null);
 
     /*

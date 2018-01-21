@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -50,6 +50,6 @@ cursor.insert()
 # Iterate through the records
 cursor.reset()
 for key, value in cursor:
-    print('Got record: ' + key + ' : ' + value)
+    print('Got record: %s : %s' % (key, value))
 
 conn.close()

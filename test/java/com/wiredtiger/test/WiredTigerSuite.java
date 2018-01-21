@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -34,10 +34,15 @@ import org.junit.runners.Suite;
 @Suite.SuiteClasses( {
     AsyncTest.class,
     AutoCloseTest.class,
+    BackupCursorTest.class,
+    ConfigTest.class,
     CursorTest.class,
     CursorTest02.class,
+    CursorTest03.class,
     ExceptionTest.class,
-    PackTest.class
+    PackTest.class,
+    PackTest02.class,
+    PackTest03.class
 })
 
 public class WiredTigerSuite {

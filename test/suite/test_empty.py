@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -28,15 +28,15 @@
 
 import os
 import wiredtiger, wttest
-from helper import key_populate
-from wtscenario import check_scenarios
+from wtdataset import simple_key
+from wtscenario import make_scenarios
 
 # test_empty.py
 #       Test that empty objects don't write anything other than a single sector.
 class test_empty(wttest.WiredTigerTestCase):
     name = 'test_empty'
 
-    scenarios = check_scenarios([
+    scenarios = make_scenarios([
         ('file-r', dict(type='file:', fmt='r')),
         ('file-S', dict(type='file:', fmt='S')),
         ('table-r', dict(type='table:', fmt='r')),
@@ -53,7 +53,7 @@ class test_empty(wttest.WiredTigerTestCase):
             name = name + '.wt'
         self.assertEquals(os.stat(name).st_size, 4*1024)
 
-    # Open a new sesssion, add a few rows to an object and then remove them,
+    # Open a new session, add a few rows to an object and then remove them,
     # then close the object.  We open/close the object so it's flushed from
     # the underlying cache each time.
     def empty(self):
@@ -64,7 +64,7 @@ class test_empty(wttest.WiredTigerTestCase):
         # Add a few records to the object and remove them.
         cursor = self.session.open_cursor(uri, None, None)
         for i in range(1,5):
-            key = key_populate(cursor, i)
+            key = simple_key(cursor, i)
             cursor[key] = "XXX"
             del cursor[key]
 

@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -26,11 +26,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "test_util.i"
+#include "test_util.h"
 
 static struct {
-	char *progname;				/* Program name */
-
 	WT_CONNECTION *wt_conn;			/* WT_CONNECTION handle */
 	WT_SESSION *wt_session;			/* WT_SESSION handle */
 
@@ -50,7 +48,8 @@ void cleanup(void);
 void populate_entries(void);
 void run(void);
 void setup(void);
-void usage(void);
+void usage(void)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 
 extern char *__wt_optarg;
 extern int __wt_optind;
@@ -60,10 +59,7 @@ main(int argc, char *argv[])
 {
 	int ch;
 
-	if ((g.progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		g.progname = argv[0];
-	else
-		++g.progname;
+	(void)testutil_set_progname(argv);
 
 	/* Set default configuration values. */
 	g.c_cache = 10;
@@ -74,7 +70,7 @@ main(int argc, char *argv[])
 	g.c_srand = 3233456;
 
 	/* Set values from the command line. */
-	while ((ch = __wt_getopt(g.progname, argc, argv, "c:f:k:o:s:")) != EOF)
+	while ((ch = __wt_getopt(progname, argc, argv, "c:f:k:o:s:")) != EOF)
 		switch (ch) {
 		case 'c':			/* Cache size */
 			g.c_cache = (u_int)atoi(__wt_optarg);
@@ -110,11 +106,9 @@ setup(void)
 {
 	WT_CONNECTION *conn;
 	WT_SESSION *session;
-	int ret;
 	char config[512];
 
-	if ((ret = system("rm -f WiredTiger* *.bf")) != 0)
-		testutil_die(ret, "system cleanup call failed");
+	testutil_check(system("rm -f WiredTiger* *.bf"));
 
 	/*
 	 * This test doesn't test public Wired Tiger functionality, it still
@@ -125,15 +119,13 @@ setup(void)
 	 * Open configuration -- put command line configuration options at the
 	 * end so they can override "standard" configuration.
 	 */
-	snprintf(config, sizeof(config),
+	testutil_check(__wt_snprintf(config, sizeof(config),
 	    "create,error_prefix=\"%s\",cache_size=%" PRIu32 "MB,%s",
-	    g.progname, g.c_cache, g.config_open == NULL ? "" : g.config_open);
+	    progname, g.c_cache, g.config_open == NULL ? "" : g.config_open));
 
-	if ((ret = wiredtiger_open(NULL, NULL, config, &conn)) != 0)
-		testutil_die(ret, "wiredtiger_open");
+	testutil_check(wiredtiger_open(NULL, NULL, config, &conn));
 
-	if ((ret = conn->open_session(conn, NULL, NULL, &session)) != 0)
-		testutil_die(ret, "connection.open_session");
+	testutil_check(conn->open_session(conn, NULL, NULL, &session));
 
 	g.wt_conn = conn;
 	g.wt_session = session;
@@ -153,39 +145,34 @@ run(void)
 	/* Use the internal session handle to access private APIs. */
 	sess = (WT_SESSION_IMPL *)g.wt_session;
 
-	if ((ret = __wt_bloom_create(
-	    sess, uri, NULL, g.c_ops, g.c_factor, g.c_k, &bloomp)) != 0)
-		testutil_die(ret, "__wt_bloom_create");
+	testutil_check(__wt_bloom_create(
+	    sess, uri, NULL, g.c_ops, g.c_factor, g.c_k, &bloomp));
 
 	item.size = g.c_key_max;
 	for (i = 0; i < g.c_ops; i++) {
 		item.data = g.entries[i];
-		if ((ret = __wt_bloom_insert(bloomp, &item)) != 0)
-			testutil_die(ret, "__wt_bloom_insert: %d", i);
+		__wt_bloom_insert(bloomp, &item);
 	}
 
-	if ((ret = __wt_bloom_finalize(bloomp)) != 0)
-		testutil_die(ret, "__wt_bloom_finalize");
+	testutil_check(__wt_bloom_finalize(bloomp));
 
 	for (i = 0; i < g.c_ops; i++) {
 		item.data = g.entries[i];
 		if ((ret = __wt_bloom_get(bloomp, &item)) != 0) {
-			fprintf(stderr, "get failed at record: %d\n", i);
+			fprintf(stderr,
+			    "get failed at record: %" PRIu32 "\n", i);
 			testutil_die(ret, "__wt_bloom_get");
 		}
 	}
-	if ((ret = __wt_bloom_close(bloomp)) != 0)
-		testutil_die(ret, "__wt_bloom_close");
+	testutil_check(__wt_bloom_close(bloomp));
 
-	if ((ret = g.wt_session->checkpoint(g.wt_session, NULL)) != 0)
-		testutil_die(ret, "WT_SESSION.checkpoint");
-	if ((ret = __wt_bloom_open(
-	    sess, uri, g.c_factor, g.c_k, NULL, &bloomp)) != 0)
-		testutil_die(ret, "__wt_bloom_open");
+	testutil_check(g.wt_session->checkpoint(g.wt_session, NULL));
+	testutil_check(__wt_bloom_open(
+	    sess, uri, g.c_factor, g.c_k, NULL, &bloomp));
+
 	for (i = 0; i < g.c_ops; i++) {
 		item.data = g.entries[i];
-		if ((ret = __wt_bloom_get(bloomp, &item)) != 0)
-			testutil_die(ret, "__wt_bloom_get");
+		testutil_check(__wt_bloom_get(bloomp, &item));
 	}
 
 	/*
@@ -193,34 +180,33 @@ run(void)
 	 * ensure the value doesn't overlap with existing values.
 	 */
 	item.size = g.c_key_max + 10;
-	item.data = calloc(item.size, 1);
+	item.data = dcalloc(item.size, 1);
 	memset((void *)item.data, 'a', item.size);
 	for (i = 0, fp = 0; i < g.c_ops; i++) {
 		((uint8_t *)item.data)[i % item.size] =
 		    'a' + ((uint8_t)rand() % 26);
 		if ((ret = __wt_bloom_get(bloomp, &item)) == 0)
 			++fp;
+		if (ret != 0 && ret != WT_NOTFOUND)
+			testutil_die(ret, "__wt_bloom_get");
 	}
 	free((void *)item.data);
-	printf("Out of %d ops, got %d false positives, %.4f%%\n",
+	printf(
+	    "Out of %" PRIu32 " ops, got %" PRIu32 " false positives, %.4f%%\n",
 	    g.c_ops, fp, 100.0 * fp/g.c_ops);
-	if ((ret = __wt_bloom_drop(bloomp, NULL)) != 0)
-		testutil_die(ret, "__wt_bloom_drop");
+	testutil_check(__wt_bloom_drop(bloomp, NULL));
 }
 
 void
 cleanup(void)
 {
 	uint32_t i;
-	int ret;
 
 	for (i = 0; i < g.c_ops; i++)
 		free(g.entries[i]);
 	free(g.entries);
-	if ((ret = g.wt_session->close(g.wt_session, NULL)) != 0)
-		testutil_die(ret, "WT_SESSION.close");
-	if ((g.wt_conn->close(g.wt_conn, NULL)) != 0)
-		testutil_die(ret, "WT_CONNECTION.close");
+	testutil_check(g.wt_session->close(g.wt_session, NULL));
+	testutil_check(g.wt_conn->close(g.wt_conn, NULL));
 }
 
 /*
@@ -235,14 +221,10 @@ populate_entries(void)
 
 	srand(g.c_srand);
 
-	entries = calloc(g.c_ops, sizeof(uint8_t *));
-	if (entries == NULL)
-		testutil_die(ENOMEM, "key buffer malloc");
+	entries = dcalloc(g.c_ops, sizeof(uint8_t *));
 
 	for (i = 0; i < g.c_ops; i++) {
-		entries[i] = calloc(g.c_key_max, sizeof(uint8_t));
-		if (entries[i] == NULL)
-			testutil_die(ENOMEM, "key buffer malloc 2");
+		entries[i] = dcalloc(g.c_key_max, sizeof(uint8_t));
 		for (j = 0; j < g.c_key_max; j++)
 			entries[i][j] = 'a' + ((uint8_t)rand() % 26);
 	}
@@ -257,7 +239,7 @@ populate_entries(void)
 void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-cfkos]\n", g.progname);
+	fprintf(stderr, "usage: %s [-cfkos]\n", progname);
 	fprintf(stderr, "%s",
 	    "\t-c cache size\n"
 	    "\t-f number of bits per item\n"

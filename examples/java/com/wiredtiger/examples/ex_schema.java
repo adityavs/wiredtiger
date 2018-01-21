@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -57,12 +57,16 @@ public class ex_schema {
         popData = new ArrayList<PopRecord>();
 
         popData.add(new PopRecord("AU",  (short)1900,	  4000000 ));
+        popData.add(new PopRecord("AU",  (short)1950,	  8267337 ));
         popData.add(new PopRecord("AU",  (short)2000,	 19053186 ));
         popData.add(new PopRecord("CAN", (short)1900,	  5500000 ));
+        popData.add(new PopRecord("CAN", (short)1950,	 14011422 ));
         popData.add(new PopRecord("CAN", (short)2000,	 31099561 ));
         popData.add(new PopRecord("UK",  (short)1900,	369000000 ));
+        popData.add(new PopRecord("UK",  (short)1950,	 50127000 ));
         popData.add(new PopRecord("UK",  (short)2000,	 59522468 ));
         popData.add(new PopRecord("USA", (short)1900,	 76212168 ));
+        popData.add(new PopRecord("USA", (short)1950,	150697361 ));
         popData.add(new PopRecord("USA", (short)2000,	301279593 ));
     };
     /*! [schema declaration] */
@@ -72,7 +76,8 @@ public class ex_schema {
         throws WiredTigerException
     {
         Connection conn;
-        Cursor cursor;
+        Cursor country_cursor, country_cursor2, cursor, join_cursor,
+            stat_cursor, subjoin_cursor, year_cursor;
         Session session;
         String country;
         long recno, population;
@@ -102,7 +107,7 @@ public class ex_schema {
             home = null;
 
         try {
-            conn = wiredtiger.open(home, "create");
+            conn = wiredtiger.open(home, "create,statistics=(fast)");
             session = conn.open_session(null);
         } catch (WiredTigerException wte) {
             System.err.println("WiredTigerException: " + wte);
@@ -206,7 +211,7 @@ public class ex_schema {
          * for a particular country.
          */
         cursor = session.open_cursor("colgroup:poptable:main", null, null);
-        cursor.putKeyLong(2);
+        cursor.putKeyRecord(2);
         if ((ret = cursor.search()) == 0) {
             country = cursor.getValueString();
             year = cursor.getValueShort();
@@ -223,7 +228,7 @@ public class ex_schema {
          * population of a particular country.
          */
         cursor = session.open_cursor("colgroup:poptable:population", null, null);
-        cursor.putKeyLong(2);
+        cursor.putKeyRecord(2);
         if ((ret = cursor.search()) == 0) {
             population = cursor.getValueLong();
             System.out.println("ID 2: population " + population);
@@ -334,6 +339,99 @@ public class ex_schema {
         }
         /*! [Access only the index] */
         ret = cursor.close();
+
+	/*! [Join cursors] */
+	/* Open cursors needed by the join. */
+	join_cursor = session.open_cursor(
+	    "join:table:poptable", null, null);
+	country_cursor = session.open_cursor(
+            "index:poptable:country", null, null);
+	year_cursor = session.open_cursor(
+	    "index:poptable:immutable_year", null, null);
+
+	/* select values WHERE country == "AU" AND year > 1900 */
+	country_cursor.putKeyString("AU");
+	ret = country_cursor.search();
+	session.join(join_cursor, country_cursor, "compare=eq,count=10");
+	year_cursor.putKeyShort((short)1900);
+	ret = year_cursor.search();
+	session.join(join_cursor, year_cursor,
+	    "compare=gt,count=10,strategy=bloom");
+
+	/* List the values that are joined */
+	while ((ret = join_cursor.next()) == 0) {
+            recno = join_cursor.getKeyRecord();
+            country = join_cursor.getValueString();
+            year = join_cursor.getValueShort();
+            population = join_cursor.getValueLong();
+            System.out.print("ID " + recno);
+            System.out.println( ": country " + country + ", year " + year +
+                ", population " + population);
+	}
+	/*! [Join cursors] */
+
+        /*! [Statistics cursor join cursor] */
+        stat_cursor = session.open_cursor(
+            "statistics:join", join_cursor, null);
+        /*! [Statistics cursor join cursor] */
+
+        ret = stat_cursor.close();
+	ret = join_cursor.close();
+	ret = year_cursor.close();
+	ret = country_cursor.close();
+
+	/*! [Complex join cursors] */
+	/* Open cursors needed by the join. */
+	join_cursor = session.open_cursor(
+            "join:table:poptable", null, null);
+	subjoin_cursor = session.open_cursor(
+            "join:table:poptable", null, null);
+	country_cursor = session.open_cursor(
+            "index:poptable:country", null, null);
+	country_cursor2 = session.open_cursor(
+            "index:poptable:country", null, null);
+	year_cursor = session.open_cursor(
+            "index:poptable:immutable_year", null, null);
+
+	/*
+	 * select values WHERE (country == "AU" OR country == "UK")
+	 *                     AND year > 1900
+	 *
+	 * First, set up the join representing the country clause.
+	 */
+	country_cursor.putKeyString("AU");
+	ret = country_cursor.search();
+	ret = session.join(subjoin_cursor, country_cursor,
+	    "operation=or,compare=eq,count=10");
+	country_cursor2.putKeyString("UK");
+	ret = country_cursor2.search();
+	ret = session.join(subjoin_cursor, country_cursor2,
+	    "operation=or,compare=eq,count=10");
+
+	/* Join that to the top join, and add the year clause */
+	ret = session.join(join_cursor, subjoin_cursor, null);
+	year_cursor.putKeyShort((short)1900);
+	ret = year_cursor.search();
+	ret = session.join(join_cursor, year_cursor,
+	    "compare=gt,count=10,strategy=bloom");
+
+	/* List the values that are joined */
+	while ((ret = join_cursor.next()) == 0) {
+            recno = join_cursor.getKeyRecord();
+            country = join_cursor.getValueString();
+            year = join_cursor.getValueShort();
+            population = join_cursor.getValueLong();
+            System.out.print("ID " + recno);
+            System.out.println( ": country " + country + ", year " + year +
+                ", population " + population);
+	}
+	/*! [Complex join cursors] */
+
+	ret = join_cursor.close();
+	ret = subjoin_cursor.close();
+	ret = year_cursor.close();
+	ret = country_cursor.close();
+	ret = country_cursor2.close();
 
         ret = conn.close(null);
 

@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -30,8 +30,10 @@
 
 GLOBAL g;
 
+static void format_die(void);
 static void startup(void);
-static void usage(void);
+static void usage(void)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 
 extern int __wt_optind;
 extern char *__wt_optarg;
@@ -40,15 +42,14 @@ int
 main(int argc, char *argv[])
 {
 	time_t start;
-	int ch, reps, ret;
+	int ch, onerun, reps;
 	const char *config, *home;
+
+	custom_die = format_die;		/* Local death handler. */
 
 	config = NULL;
 
-	if ((g.progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		g.progname = argv[0];
-	else
-		++g.progname;
+	(void)testutil_set_progname(argv);
 
 #if 0
 	/* Configure the GNU malloc for debugging. */
@@ -60,15 +61,16 @@ main(int argc, char *argv[])
 #endif
 
 	/* Track progress unless we're re-directing output to a file. */
-	g.track = isatty(1) ? 1 : 0;
+	g.c_quiet = isatty(1) ? 0 : 1;
 
 	/* Set values from the command line. */
 	home = NULL;
+	onerun = 0;
 	while ((ch = __wt_getopt(
-	    g.progname, argc, argv, "1C:c:H:h:Llqrt:")) != EOF)
+	    progname, argc, argv, "1C:c:H:h:Llqrt:")) != EOF)
 		switch (ch) {
 		case '1':			/* One run */
-			g.c_runs = 1;
+			onerun = 1;
 			break;
 		case 'C':			/* wiredtiger_open config */
 			g.config_open = __wt_optarg;
@@ -94,10 +96,10 @@ main(int argc, char *argv[])
 			g.logging = LOG_OPS;
 			break;
 		case 'q':			/* Quiet */
-			g.track = 0;
+			g.c_quiet = 1;
 			break;
 		case 'r':			/* Replay a run */
-			g.replay = 1;
+			g.replay = true;
 			break;
 		default:
 			usage();
@@ -105,8 +107,8 @@ main(int argc, char *argv[])
 	argc -= __wt_optind;
 	argv += __wt_optind;
 
-	/* Initialize the global random number generator. */
-	__wt_random_init(&g.rnd);
+	/* Initialize the global RNG. */
+	__wt_random_init_seed(NULL, &g.rnd);
 
 	/* Set up paths. */
 	path_setup(home);
@@ -114,9 +116,9 @@ main(int argc, char *argv[])
 	/* If it's a replay, use the home directory's CONFIG file. */
 	if (g.replay) {
 		if (config != NULL)
-			die(EINVAL, "-c incompatible with -r");
+			testutil_die(EINVAL, "-c incompatible with -r");
 		if (access(g.home_config, R_OK) != 0)
-			die(ENOENT, "%s", g.home_config);
+			testutil_die(ENOENT, "%s", g.home_config);
 		config = g.home_config;
 	}
 
@@ -155,23 +157,28 @@ main(int argc, char *argv[])
 		g.c_runs = 1;
 
 	/*
+	 * Let the command line -1 flag override runs configured from other
+	 * sources.
+	 */
+	if (onerun)
+		g.c_runs = 1;
+
+	/*
 	 * Initialize locks to single-thread named checkpoints and backups, last
 	 * last-record updates, and failures.
 	 */
-	if ((ret = pthread_rwlock_init(&g.append_lock, NULL)) != 0)
-		die(ret, "pthread_rwlock_init: append lock");
-	if ((ret = pthread_rwlock_init(&g.backup_lock, NULL)) != 0)
-		die(ret, "pthread_rwlock_init: backup lock");
-	if ((ret = pthread_rwlock_init(&g.death_lock, NULL)) != 0)
-		die(ret, "pthread_rwlock_init: death lock");
+	testutil_check(pthread_rwlock_init(&g.append_lock, NULL));
+	testutil_check(pthread_rwlock_init(&g.backup_lock, NULL));
+	testutil_check(pthread_rwlock_init(&g.death_lock, NULL));
 
-	printf("%s: process %" PRIdMAX "\n", g.progname, (intmax_t)getpid());
+	printf("%s: process %" PRIdMAX "\n", progname, (intmax_t)getpid());
 	while (++g.run_cnt <= g.c_runs || g.c_runs == 0 ) {
 		startup();			/* Start a run */
 
 		config_setup();			/* Run configuration */
 		config_print(0);		/* Dump run configuration */
-		key_len_setup();		/* Setup keys */
+		key_init();			/* Setup keys/values */
+		val_init();
 
 		start = time(NULL);
 		track("starting up", 0ULL, NULL);
@@ -180,8 +187,8 @@ main(int argc, char *argv[])
 		if (SINGLETHREADED)
 			bdb_open();		/* Initial file config */
 #endif
-		wts_open(g.home, 1, &g.wts_conn);
-		wts_create();
+		wts_open(g.home, true, &g.wts_conn);
+		wts_init();
 
 		wts_load();			/* Load initial records */
 		wts_verify("post-bulk verify");	/* Verify */
@@ -224,6 +231,11 @@ main(int argc, char *argv[])
 		wts_close();
 
 		/*
+		 * Rebalance testing.
+		 */
+		wts_rebalance();
+
+		/*
 		 * If single-threaded, we can dump and compare the WiredTiger
 		 * and Berkeley DB data sets.
 		 */
@@ -236,12 +248,14 @@ main(int argc, char *argv[])
 		wts_salvage();
 
 		/* Overwrite the progress line with a completion line. */
-		if (g.track)
+		if (!g.c_quiet)
 			printf("\r%78s\r", " ");
-		printf("%4d: %s, %s (%.0f seconds)\n",
+		printf("%4" PRIu32 ": %s, %s (%.0f seconds)\n",
 		    g.run_cnt, g.c_data_source,
 		    g.c_file_type, difftime(time(NULL), start));
 		fflush(stdout);
+
+		val_teardown();			/* Teardown keys/values */
 	}
 
 	/* Flush/close any logging information. */
@@ -250,10 +264,9 @@ main(int argc, char *argv[])
 
 	config_print(0);
 
-	if ((ret = pthread_rwlock_destroy(&g.append_lock)) != 0)
-		die(ret, "pthread_rwlock_destroy: append lock");
-	if ((ret = pthread_rwlock_destroy(&g.backup_lock)) != 0)
-		die(ret, "pthread_rwlock_destroy: backup lock");
+	testutil_check(pthread_rwlock_destroy(&g.append_lock));
+	testutil_check(pthread_rwlock_destroy(&g.backup_lock));
+	testutil_check(pthread_rwlock_destroy(&g.death_lock));
 
 	config_clear();
 
@@ -267,7 +280,7 @@ main(int argc, char *argv[])
 static void
 startup(void)
 {
-	int ret;
+	WT_DECL_RET;
 
 	/* Flush/close any logging information. */
 	fclose_and_clear(&g.logfp);
@@ -275,36 +288,33 @@ startup(void)
 
 	/* Create or initialize the home and data-source directories. */
 	if ((ret = system(g.home_init)) != 0)
-		die(ret, "home directory initialization failed");
+		testutil_die(ret, "home directory initialization failed");
 
 	/* Open/truncate the logging file. */
 	if (g.logging != 0 && (g.logfp = fopen(g.home_log, "w")) == NULL)
-		die(errno, "fopen: %s", g.home_log);
+		testutil_die(errno, "fopen: %s", g.home_log);
 
 	/* Open/truncate the random number logging file. */
 	if ((g.randfp = fopen(g.home_rand, g.replay ? "r" : "w")) == NULL)
-		die(errno, "%s", g.home_rand);
+		testutil_die(errno, "%s", g.home_rand);
 }
 
 /*
  * die --
- *	Report an error and quit, dumping the configuration.
+ *	Report an error, dumping the configuration.
  */
-void
-die(int e, const char *fmt, ...)
+static void
+format_die(void)
 {
-	va_list ap;
-
-	/* Single-thread error handling. */
+	/*
+	 * Single-thread error handling, our caller exits after calling
+	 * us - don't release the lock.
+	 */
 	(void)pthread_rwlock_wrlock(&g.death_lock);
 
-	if (fmt != NULL) {				/* Death message. */
-		fprintf(stderr, "%s: ", g.progname);
-		va_start(ap, fmt);
-		vfprintf(stderr, fmt, ap);
-		va_end(ap);
-		if (e != 0)
-			fprintf(stderr, ": %s", wiredtiger_strerror(e));
+	/* Try and turn off tracking so it doesn't obscure the error message. */
+	if (!g.c_quiet) {
+		g.c_quiet = 1;
 		fprintf(stderr, "\n");
 	}
 
@@ -315,8 +325,6 @@ die(int e, const char *fmt, ...)
 	/* Display the configuration that failed. */
 	if (g.run_cnt)
 		config_print(1);
-
-	exit(EXIT_FAILURE);
 }
 
 /*
@@ -330,7 +338,7 @@ usage(void)
 	    "usage: %s [-1Llqr] [-C wiredtiger-config]\n    "
 	    "[-c config-file] [-H mount] [-h home] "
 	    "[name=value ...]\n",
-	    g.progname);
+	    progname);
 	fprintf(stderr, "%s",
 	    "\t-1 run once\n"
 	    "\t-C specify wiredtiger_open configuration arguments\n"

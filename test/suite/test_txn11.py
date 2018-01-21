@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -31,8 +31,7 @@
 
 import fnmatch, os, time
 from suite_subprocess import suite_subprocess
-from helper import simple_populate
-from wiredtiger import wiredtiger_open
+from wtdataset import SimpleDataSet
 import wttest
 
 class test_txn11(wttest.WiredTigerTestCase, suite_subprocess):
@@ -44,33 +43,28 @@ class test_txn11(wttest.WiredTigerTestCase, suite_subprocess):
     source_uri = 'table:' + tablename + "_src"
     uri = 'table:' + tablename
 
-    def setUpConnectionOpen(self, dir):
-        self.home = dir
-        conn_params = \
-            'create,error_prefix="%s: ",' % self.shortid() + \
-            'log=(archive=%s,enabled,file_max=%s,prealloc=false),' % (self.archive, self.logmax) + \
+    # Turn on logging for this test.
+    def conn_config(self):
+        return 'log=(archive=%s,' % self.archive + \
+            'enabled,file_max=%s,prealloc=false),' % self.logmax + \
             'transaction_sync=(enabled=false),'
-        conn = wiredtiger_open(dir, conn_params)
-        self.pr(`conn`)
-        return conn
 
     def run_checkpoints(self):
-        orig_logs = fnmatch.filter(os.listdir(self.home), "*Log*")
+        orig_logs = fnmatch.filter(os.listdir(self.home), "*gerLog*")
         checkpoints = 0
         sorig = set(orig_logs)
         while checkpoints < 500:
             self.session.checkpoint()
-            cur_logs = fnmatch.filter(os.listdir(self.home), "*Log*")
+            cur_logs = fnmatch.filter(os.listdir(self.home), "*gerLog*")
             scur = set(cur_logs)
             if scur.isdisjoint(sorig):
                 break
             checkpoints += 1
         return
 
-
     def test_ops(self):
         # Populate a table
-        simple_populate(self, self.source_uri, 'key_format=S', self.nrows)
+        SimpleDataSet(self, self.source_uri, self.nrows).populate()
 
         # Run forced checkpoints
         self.run_checkpoints()

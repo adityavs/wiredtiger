@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -28,7 +28,7 @@
 
 import os
 import wiredtiger, wttest, run
-from wtscenario import check_scenarios, number_scenarios
+from wtscenario import make_scenarios
 
 # test_schema05.py
 #    Test indices using a custom extractor.
@@ -51,41 +51,28 @@ class test_schema05(wttest.WiredTigerTestCase):
     nentries = 1000
     nindices = 6
 
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, exts):
-        extfiles = []
-        for ext in exts:
-            (dirname, name, libname) = ext
-            if name != None and name != 'none':
-                testdir = os.path.dirname(__file__)
-                extdir = os.path.join(run.wt_builddir, 'ext', dirname)
-                extfile = os.path.join(
-                    extdir, name, '.libs', 'libwiredtiger_' + libname + '.so')
-                if not os.path.exists(extfile):
-                    self.skipTest('extension "' + extfile + '" not built')
-                if not extfile in extfiles:
-                    extfiles.append(extfile)
-        if len(extfiles) == 0:
-            return ''
-        else:
-            return ',extensions=["' + '","'.join(extfiles) + '"]'
+    scenarios = make_scenarios([
+        ('index-before', { 'create_index' : 0 }),
+        ('index-during', { 'create_index' : 1 }),
+        ('index-after', { 'create_index' : 2 }),
+    ])
 
-    # Override WiredTigerTestCase, we have extensions.
-    def setUpConnectionOpen(self, dir):
-        extarg = self.extensionArg([('extractors', 'csv', 'csv_extractor')])
-        connarg = 'create,error_prefix="{0}: ",{1}'.format(
-            self.shortid(), extarg)
-        conn = wiredtiger.wiredtiger_open(dir, connarg)
-        self.pr(`conn`)
-        return conn
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('extractors', 'csv')
 
     def create_indices(self):
         # Create self.nindices index files, each with a column from the CSV
         for i in range(0, self.nindices):
             si = str(i)
-            self.session.create("index:schema05:x" + si,
-                                "key_format=S,columns=(key),"
-                                "extractor=csv,app_metadata=" + si)
+            self.session.create('index:schema05:x' + si,
+                                'key_format=S,columns=(key),'
+                                'extractor=csv,app_metadata={"format" : "S",' +
+                                '"field" : "' + si + '"}')
+
+    def drop_indices(self):
+        for i in range(0, self.nindices):
+            self.session.drop("index:schema05:x" + str(i))
 
     def csv(self, s, i):
         return s.split(',')[i]
@@ -98,8 +85,11 @@ class test_schema05(wttest.WiredTigerTestCase):
         if phase == 0:
             range_from = 0
             range_to = self.nentries / 2
-        else:
+        elif phase == 1:
             range_from = self.nentries / 2
+            range_to = self.nentries - 5
+        else:
+            range_from = self.nentries - 5
             range_to = self.nentries
 
         for i in range(range_from, range_to):
@@ -107,7 +97,7 @@ class test_schema05(wttest.WiredTigerTestCase):
             cursor[i] = ','.join([str((i*j)%100) for j in
                                   range(0, self.nindices)])
         cursor.close()
-        
+
     def check_entries(self):
         cursor = self.session.open_cursor('table:schema05', None, None)
         icursor = []
@@ -133,15 +123,27 @@ class test_schema05(wttest.WiredTigerTestCase):
                 self.assertEqual(value, expect)
             i += 1
         self.assertEqual(self.nentries, i)
+        for i in range(0, self.nindices):
+            icursor[i].close()
 
     def test_index(self):
         self.session.create("table:schema05", "key_format=i,value_format=S,"
                             "columns=(primarykey,value)")
-        self.create_indices()
+        if self.create_index == 0:
+            self.create_indices()
         self.populate(0)
+        if self.create_index == 1:
+            self.create_indices()
         self.populate(1)
+        if self.create_index == 2:
+            self.create_indices()
+        self.populate(2)
         self.check_entries()
 
+        # Drop and recreate all indices, everything should be there.
+        self.drop_indices()
+        self.create_indices()
+        self.check_entries()
 
 if __name__ == '__main__':
     wttest.run()

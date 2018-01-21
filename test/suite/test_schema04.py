@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -28,7 +28,7 @@
 
 import os
 import wiredtiger, wttest, run
-from wtscenario import check_scenarios, number_scenarios
+from wtscenario import make_scenarios
 
 # test_schema04.py
 #    Test indices with duplicates
@@ -46,6 +46,12 @@ class test_schema04(wttest.WiredTigerTestCase):
     as well as the 0th column, guarantees we'll have some duplicates.
     """
     nentries = 100
+
+    scenarios = make_scenarios([
+        ('index-before', { 'create_index' : 0 }),
+        ('index-during', { 'create_index' : 1 }),
+        ('index-after', { 'create_index' : 2 }),
+    ])
 
     def create_indices(self):
         # Create 6 index files, each with a column from the main table
@@ -73,7 +79,7 @@ class test_schema04(wttest.WiredTigerTestCase):
                 (i*3)%100, (i*4)%100, (i*5)%100)
             cursor.insert()
         cursor.close()
-        
+
     def check_entries(self):
         cursor = self.session.open_cursor('table:schema04', None, None)
         icursor = []
@@ -106,11 +112,15 @@ class test_schema04(wttest.WiredTigerTestCase):
         self.session.create("table:schema04",
                             "key_format=i,value_format=iiiiii,"
                             "columns=(primarykey,v0,v1,v2,v3,v4,v5)")
-        self.create_indices()
+        if self.create_index == 0:
+            self.create_indices()
         self.populate(0)
+        if self.create_index == 1:
+            self.create_indices()
         self.populate(1)
+        if self.create_index == 2:
+            self.create_indices()
         self.check_entries()
-
 
 if __name__ == '__main__':
     wttest.run()

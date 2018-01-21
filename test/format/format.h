@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -26,54 +26,30 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <sys/stat.h>
-#ifndef _WIN32
-#include <sys/time.h>
-#endif
-#include <sys/types.h>
-
-#include <assert.h>
-#include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <inttypes.h>
-#include <limits.h>
-#ifndef _WIN32
-#include <pthread.h>
-#endif
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-#include <time.h>
-
-#include "test_util.i"
+#include "test_util.h"
 
 #ifdef BDB
+/*
+ * Berkeley DB has an #ifdef we need to provide a value for, we'll see an
+ * undefined error if it's unset during a strict compile.
+ */
+#ifndef	DB_DBM_HSEARCH
+#define	DB_DBM_HSEARCH	0
+#endif
+#include <assert.h>
 #include <db.h>
 #endif
 
-#if defined(__GNUC__)
-#define	WT_GCC_ATTRIBUTE(x)	__attribute__(x)
-#else
-#define	WT_GCC_ATTRIBUTE(x)
-#endif
-
-extern WT_EXTENSION_API *wt_api;
-
 #define	EXTPATH	"../../ext/"			/* Extensions path */
 
-#define	BZIP_PATH							\
-	EXTPATH "compressors/bzip2/.libs/libwiredtiger_bzip2.so"
 #define	LZ4_PATH							\
 	EXTPATH "compressors/lz4/.libs/libwiredtiger_lz4.so"
 #define	SNAPPY_PATH							\
 	EXTPATH "compressors/snappy/.libs/libwiredtiger_snappy.so"
 #define	ZLIB_PATH							\
 	EXTPATH "compressors/zlib/.libs/libwiredtiger_zlib.so"
+#define	ZSTD_PATH							\
+	EXTPATH "compressors/zstd/.libs/libwiredtiger_zstd.so"
 
 #define	REVERSE_PATH							\
 	EXTPATH "collators/reverse/.libs/libwiredtiger_reverse_collator.so"
@@ -94,8 +70,6 @@ extern WT_EXTENSION_API *wt_api;
 #define	KILOBYTE(v)	((v) * 1024)
 #undef	MEGABYTE
 #define	MEGABYTE(v)	((v) * 1048576)
-#undef	GIGABYTE
-#define	GIGABYTE(v)	((v) * 1073741824ULL)
 
 #define	WT_NAME	"wt"				/* Object name */
 
@@ -104,15 +78,9 @@ extern WT_EXTENSION_API *wt_api;
 
 #define	FORMAT_OPERATION_REPS	3		/* 3 thread operations sets */
 
-#ifndef _WIN32
-#define	SIZET_FMT	"%zu"			/* size_t format string */
-#else
-#define	SIZET_FMT	"%Iu"			/* size_t format string */
-#endif
+#define	MAX_MODIFY_ENTRIES	5		/* maximum change vectors */
 
 typedef struct {
-	char *progname;				/* Program name */
-
 	char *home;				/* Home directory */
 	char *home_backup;			/* Hot-backup directory */
 	char *home_backup_init;			/* Initialize backup command */
@@ -126,6 +94,8 @@ typedef struct {
 
 	char *helium_mount;			/* Helium volume */
 
+	char wiredtiger_open_config[8 * 1024];	/* Database open config */
+
 #ifdef HAVE_BERKELEY_DB
 	void *bdb;				/* BDB comparison handle */
 	void *dbc;				/* BDB cursor handle */
@@ -134,7 +104,7 @@ typedef struct {
 	WT_CONNECTION	 *wts_conn;
 	WT_EXTENSION_API *wt_api;
 
-	int   rand_log_stop;			/* Logging turned off */
+	bool  rand_log_stop;			/* Logging turned off */
 	FILE *randfp;				/* Random number log */
 
 	uint32_t run_cnt;			/* Run counter */
@@ -145,13 +115,14 @@ typedef struct {
 	} logging;
 	FILE *logfp;				/* Log file */
 
-	int replay;				/* Replaying a run. */
-	int track;				/* Track progress */
-	int workers_finished;			/* Operations completed */
+	bool replay;				/* Replaying a run. */
+	bool workers_finished;			/* Operations completed */
 
-	pthread_rwlock_t backup_lock;		/* Hot backup running */
+	pthread_rwlock_t backup_lock;		/* Backup running */
 
-	uint64_t rnd;				/* Global RNG state */
+	WT_RAND_STATE rnd;			/* Global RNG state */
+
+	uint64_t timestamp;			/* Counter for timestamps. */
 
 	/*
 	 * We have a list of records that are appended, but not yet "resolved",
@@ -170,6 +141,7 @@ typedef struct {
 	char *config_open;			/* Command-line configuration */
 
 	uint32_t c_abort;			/* Config values */
+	uint32_t c_alter;
 	uint32_t c_auto_throttle;
 	uint32_t c_backups;
 	uint32_t c_bitcnt;
@@ -178,22 +150,28 @@ typedef struct {
 	uint32_t c_bloom_hash_count;
 	uint32_t c_bloom_oldest;
 	uint32_t c_cache;
-	uint32_t c_compact;
-	uint32_t c_checkpoints;
+	uint32_t c_cache_minimum;
+	char	*c_checkpoint;
+	uint32_t c_checkpoint_log_size;
+	uint32_t c_checkpoint_wait;
 	char	*c_checksum;
 	uint32_t c_chunk_size;
+	uint32_t c_compact;
 	char	*c_compression;
-	char	*c_encryption;
 	char	*c_config_open;
 	uint32_t c_data_extend;
 	char	*c_data_source;
 	uint32_t c_delete_pct;
 	uint32_t c_dictionary;
+	uint32_t c_direct_io;
+	char	*c_encryption;
 	uint32_t c_evict_max;
-	uint32_t c_firstfit;
 	char	*c_file_type;
+	uint32_t c_firstfit;
 	uint32_t c_huffman_key;
 	uint32_t c_huffman_value;
+	uint32_t c_in_memory;
+	uint32_t c_independent_thread_rng;
 	uint32_t c_insert_pct;
 	uint32_t c_internal_key_truncation;
 	uint32_t c_intl_page_max;
@@ -206,30 +184,45 @@ typedef struct {
 	uint32_t c_logging;
 	uint32_t c_logging_archive;
 	char	*c_logging_compression;
+	uint32_t c_logging_file_max;
 	uint32_t c_logging_prealloc;
+	uint32_t c_long_running_txn;
 	uint32_t c_lsm_worker_threads;
 	uint32_t c_merge_max;
 	uint32_t c_mmap;
+	uint32_t c_modify_pct;
 	uint32_t c_ops;
 	uint32_t c_prefix_compression;
 	uint32_t c_prefix_compression_min;
+	uint32_t c_quiet;
+	uint32_t c_read_pct;
+	uint32_t c_rebalance;
 	uint32_t c_repeat_data_pct;
 	uint32_t c_reverse;
 	uint32_t c_rows;
 	uint32_t c_runs;
+	uint32_t c_salvage;
 	uint32_t c_split_pct;
 	uint32_t c_statistics;
 	uint32_t c_statistics_server;
 	uint32_t c_threads;
 	uint32_t c_timer;
+	uint32_t c_txn_freq;
+	uint32_t c_txn_timestamps;
 	uint32_t c_value_max;
 	uint32_t c_value_min;
+	uint32_t c_verify;
 	uint32_t c_write_pct;
 
-#define	FIX				1	
+#define	FIX				1
 #define	ROW				2
 #define	VAR				3
 	u_int type;				/* File type's flag value */
+
+#define	CHECKPOINT_OFF			1
+#define	CHECKPOINT_ON			2
+#define	CHECKPOINT_WIREDTIGER		3
+	u_int c_checkpoint_flag;		/* Checkpoint flag value */
 
 #define	CHECKSUM_OFF			1
 #define	CHECKSUM_ON			2
@@ -237,14 +230,13 @@ typedef struct {
 	u_int c_checksum_flag;			/* Checksum flag value */
 
 #define	COMPRESS_NONE			1
-#define	COMPRESS_BZIP			2
-#define	COMPRESS_BZIP_RAW		3
-#define	COMPRESS_LZ4			4
-#define	COMPRESS_LZ4_NO_RAW		5
-#define	COMPRESS_LZO			6
-#define	COMPRESS_SNAPPY			7
-#define	COMPRESS_ZLIB			8
-#define	COMPRESS_ZLIB_NO_RAW		9
+#define	COMPRESS_LZ4			2
+#define	COMPRESS_LZ4_NO_RAW		3
+#define	COMPRESS_LZO			4
+#define	COMPRESS_SNAPPY			5
+#define	COMPRESS_ZLIB			6
+#define	COMPRESS_ZLIB_NO_RAW		7
+#define	COMPRESS_ZSTD			8
 	u_int c_compression_flag;		/* Compression flag value */
 	u_int c_logging_compression_flag;	/* Log compression flag value */
 
@@ -266,28 +258,30 @@ typedef struct {
 extern GLOBAL g;
 
 typedef struct {
-	uint64_t rnd;				/* thread RNG state */
+	int	    id;				/* simple thread ID */
+	wt_thread_t tid;			/* thread ID */
 
-	uint64_t search;			/* operations */
-	uint64_t insert;
-	uint64_t update;
-	uint64_t remove;
-	uint64_t ops;
+	WT_RAND_STATE rnd;			/* thread RNG state */
 
 	uint64_t commit;			/* transaction resolution */
 	uint64_t rollback;
 	uint64_t deadlock;
 
-	int       id;				/* simple thread ID */
-	pthread_t tid;				/* thread ID */
+	uint64_t timestamp;			/* last committed timestamp */
 
-	int quit;				/* thread should quit */
+	bool quit;				/* thread should quit */
+
+	uint64_t search;			/* operation counts */
+	uint64_t insert;
+	uint64_t update;
+	uint64_t remove;
+	uint64_t ops;
 
 #define	TINFO_RUNNING	1			/* Running */
 #define	TINFO_COMPLETE	2			/* Finished */
 #define	TINFO_JOINED	3			/* Resolved */
 	volatile int state;			/* state */
-} TINFO WT_GCC_ATTRIBUTE((aligned(WT_CACHE_LINE_ALIGNMENT)));
+} TINFO;
 
 #ifdef HAVE_BERKELEY_DB
 void	 bdb_close(void);
@@ -296,11 +290,13 @@ void	 bdb_np(int, void *, size_t *, void *, size_t *, int *);
 void	 bdb_open(void);
 void	 bdb_read(uint64_t, void *, size_t *, int *);
 void	 bdb_remove(uint64_t, int *);
-void	 bdb_update(const void *, size_t, const void *, size_t, int *);
+void	 bdb_update(const void *, size_t, const void *, size_t);
 #endif
 
-void	*backup(void *);
-void	*compact(void *);
+WT_THREAD_RET alter(void *);
+WT_THREAD_RET backup(void *);
+WT_THREAD_RET checkpoint(void *);
+WT_THREAD_RET compact(void *);
 void	 config_clear(void);
 void	 config_error(void);
 void	 config_file(const char *);
@@ -308,38 +304,50 @@ void	 config_print(int);
 void	 config_setup(void);
 void	 config_single(const char *, int);
 void	 fclose_and_clear(FILE **);
-void	 key_gen(uint8_t *, size_t *, uint64_t);
-void	 key_gen_insert(uint64_t *, uint8_t *, size_t *, uint64_t);
-void	 key_gen_setup(uint8_t **);
-void	 key_len_setup(void);
+void	 key_gen(WT_ITEM *, uint64_t);
+void	 key_gen_init(WT_ITEM *);
+void	 key_gen_insert(WT_RAND_STATE *, WT_ITEM *, uint64_t);
+void	 key_gen_teardown(WT_ITEM *);
+void	 key_init(void);
+WT_THREAD_RET lrt(void *);
 void	 path_setup(const char *);
-uint32_t rng(uint64_t *);
+void	 print_item(const char *, WT_ITEM *);
+void	 print_item_data(const char *, const uint8_t *, size_t);
+int	 read_row(WT_CURSOR *, WT_ITEM *, WT_ITEM *, uint64_t);
+uint32_t rng(WT_RAND_STATE *);
+WT_THREAD_RET timestamp(void *);
 void	 track(const char *, uint64_t, TINFO *);
-void	 val_gen(uint64_t *, uint8_t *, size_t *, uint64_t);
-void	 val_gen_setup(uint64_t *, uint8_t **);
+void	 val_gen(WT_RAND_STATE *, WT_ITEM *, uint64_t);
+void	 val_gen_init(WT_ITEM *);
+void	 val_gen_teardown(WT_ITEM *);
+void	 val_init(void);
+void	 val_teardown(void);
 void	 wts_close(void);
-void	 wts_create(void);
 void	 wts_dump(const char *, int);
+void	 wts_init(void);
 void	 wts_load(void);
-void	 wts_open(const char *, int, WT_CONNECTION **);
+void	 wts_open(const char *, bool, WT_CONNECTION **);
 void	 wts_ops(int);
 void	 wts_read_scan(void);
+void	 wts_rebalance(void);
+void	 wts_reopen(void);
 void	 wts_salvage(void);
 void	 wts_stats(void);
 void	 wts_verify(const char *);
 
-void	 die(int, const char *, ...)
-#if defined(__GNUC__)
-__attribute__((__noreturn__))
-#endif
-;
-
 /*
  * mmrand --
- *	Return a random value between a min/max pair.
+ *	Return a random value between a min/max pair, inclusive.
  */
 static inline uint32_t
-mmrand(uint64_t *rnd, u_int min, u_int max)
+mmrand(WT_RAND_STATE *rnd, u_int min, u_int max)
 {
-	return (rng(rnd) % (((max) + 1) - (min)) + (min));
+	uint32_t v;
+	u_int range;
+
+	v = rng(rnd);
+	range = (max - min) + 1;
+	v %= range;
+	v += min;
+	return (v);
 }

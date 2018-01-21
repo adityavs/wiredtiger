@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -26,19 +26,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <sys/types.h>
-#include <sys/time.h>
+#include "test_util.h"
 
-#include <errno.h>
-#include <inttypes.h>
-#include <pthread.h>
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-
-#include "test_util.i"
 
 #define	FNAME		"file:wt.%03d"		/* File name */
 #define	FNAME_STAT	"__stats"		/* File name for statistics */
@@ -56,6 +46,6 @@ extern int   vary_nops;				/* Operations per thread */
 extern int   session_per_op;			/* New session per operation */
 
 void load(const char *);
-int  rw_start(u_int, u_int);
+void rw_start(u_int, u_int);
 void stats(void);
 void verify(const char *);

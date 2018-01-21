@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -39,16 +39,16 @@ def main():
     # Connect to the database and open a session
     conn = wiredtiger_open('WT_HOME', 'create,statistics=(all)')
     session = conn.open_session()
-    
+
     # Create a simple table
     session.create('table:access', 'key_format=S,value_format=S')
-    
+
     # Open a cursor and insert a record
     cursor = session.open_cursor('table:access', None)
 
-    cursor['key'] = 'value'    
+    cursor['key'] = 'value'
     cursor.close()
-    
+
     session.checkpoint()
     print WIREDTIGER_VERSION_STRING
     print_database_stats(session)
@@ -70,8 +70,8 @@ def print_file_stats(session):
 def print_overflow_pages(session):
     ostatcursor = session.open_cursor("statistics:table:access")
     val = ostatcursor[stat.dsrc.btree_overflow]
-    if val != 0 :
-        print str(val[0]) + '=' + str(val[1])
+    if val != 0:
+        print '%s=%s' % (str(val[0]), str(val[1]))
     ostatcursor.close()
 
 def print_derived_stats(session):
@@ -79,25 +79,24 @@ def print_derived_stats(session):
     ckpt_size = dstatcursor[stat.dsrc.block_checkpoint_size][1]
     file_size = dstatcursor[stat.dsrc.block_size][1]
     percent = 0
-    if file_size != 0 :
+    if file_size != 0:
         percent = 100 * ((float(file_size) - float(ckpt_size)) / float(file_size))
-    print "Table is %" + str(percent) + " fragmented"
+    print "Table is %%%s fragmented" % str(percent)
 
     app_insert = int(dstatcursor[stat.dsrc.cursor_insert_bytes][1])
     app_remove = int(dstatcursor[stat.dsrc.cursor_remove_bytes][1])
     app_update = int(dstatcursor[stat.dsrc.cursor_update_bytes][1])
-    fs_writes  = int(dstatcursor[stat.dsrc.cache_bytes_write][1])
+    fs_writes = int(dstatcursor[stat.dsrc.cache_bytes_write][1])
 
-    if(app_insert + app_remove + app_update != 0):
+    if app_insert + app_remove + app_update != 0:
         print "Write amplification is " + '{:.2f}'.format(fs_writes / (app_insert + app_remove + app_update))
     dstatcursor.close()
 
 def print_cursor(mycursor):
     while mycursor.next() == 0:
         val = mycursor.get_value()
-        if val[1] != '0' :
-            print str(val[0]) + '=' + str(val[1])
+        if val[1] != '0':
+            print '%s=%s' % (str(val[0]), str(val[1]))
 
 if __name__ == "__main__":
     main()
-

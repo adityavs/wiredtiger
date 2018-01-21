@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -29,18 +29,25 @@
 #include "format.h"
 #include "config.h"
 
+static void	   config_checkpoint(void);
 static void	   config_checksum(void);
 static void	   config_compression(const char *);
 static void	   config_encryption(void);
 static const char *config_file_type(u_int);
-static CONFIG	  *config_find(const char *, size_t);
+static void	   config_helium_reset(void);
+static void	   config_in_memory(void);
+static void	   config_in_memory_reset(void);
 static int	   config_is_perm(const char *);
 static void	   config_isolation(void);
+static void	   config_lrt(void);
+static void	   config_map_checkpoint(const char *, u_int *);
 static void	   config_map_checksum(const char *, u_int *);
 static void	   config_map_compression(const char *, u_int *);
 static void	   config_map_encryption(const char *, u_int *);
 static void	   config_map_file_type(const char *, u_int *);
 static void	   config_map_isolation(const char *, u_int *);
+static void	   config_pct(void);
+static void	   config_reset(void);
 
 /*
  * config_setup --
@@ -52,39 +59,51 @@ config_setup(void)
 	CONFIG *cp;
 
 	/* Clear any temporary values. */
-	config_clear();
+	config_reset();
+
+	/* Periodically run in-memory. */
+	config_in_memory();
 
 	/*
-	 * Choose a data source type and a file type: they're interrelated (LSM
-	 * trees are only compatible with row-store) and other items depend on
-	 * them.
+	 * Choose a file format and a data source: they're interrelated (LSM is
+	 * only compatible with row-store) and other items depend on them.
 	 */
+	if (!config_is_perm("file_type")) {
+		if (config_is_perm("data_source") && DATASOURCE("lsm"))
+			config_single("file_type=row", 0);
+		else
+			switch (mmrand(NULL, 1, 10)) {
+			case 1:					/* 10% */
+				if (!config_is_perm("modify_pct")) {
+					config_single("file_type=fix", 0);
+					break;
+				}
+				/* FALLTHROUGH */
+			case 2: case 3: case 4:			/* 30% */
+				config_single("file_type=var", 0);
+				break;				/* 60% */
+			case 5: case 6: case 7: case 8: case 9: case 10:
+				config_single("file_type=row", 0);
+				break;
+			}
+	}
+	config_map_file_type(g.c_file_type, &g.type);
+
 	if (!config_is_perm("data_source"))
 		switch (mmrand(NULL, 1, 3)) {
 		case 1:
 			config_single("data_source=file", 0);
 			break;
 		case 2:
-			config_single("data_source=lsm", 0);
-			break;
-		case 3:
 			config_single("data_source=table", 0);
 			break;
-		}
-
-	if (!config_is_perm("file_type"))
-		switch (DATASOURCE("lsm") ? 5 : mmrand(NULL, 1, 10)) {
-		case 1:
-			config_single("file_type=fix", 0);
-			break;
-		case 2: case 3: case 4:
-			config_single("file_type=var", 0);
-			break;
-		case 5: case 6: case 7: case 8: case 9: case 10:
-			config_single("file_type=row", 0);
+		case 3:
+			if (g.c_in_memory || g.type != ROW)
+				config_single("data_source=table", 0);
+			else
+				config_single("data_source=lsm", 0);
 			break;
 		}
-	config_map_file_type(g.c_file_type, &g.type);
 
 	/*
 	 * If data_source and file_type were both "permanent", we may still
@@ -93,7 +112,7 @@ config_setup(void)
 	if (DATASOURCE("lsm") && g.type != ROW) {
 		fprintf(stderr,
 	    "%s: lsm data_source is only compatible with row file_type\n",
-		    g.progname);
+		    progname);
 		exit(EXIT_FAILURE);
 	}
 
@@ -102,8 +121,7 @@ config_setup(void)
 	 * our configuration, LSM or KVS devices are "tables", but files are
 	 * tested as well.
 	 */
-	if ((g.uri = malloc(256)) == NULL)
-		die(errno, "malloc");
+	g.uri = dmalloc(256);
 	strcpy(g.uri, DATASOURCE("file") ? "file:" : "table:");
 	if (DATASOURCE("helium"))
 		strcat(g.uri, "dev1/");
@@ -127,19 +145,13 @@ config_setup(void)
 
 	/* Required shared libraries. */
 	if (DATASOURCE("helium") && access(HELIUM_PATH, R_OK) != 0)
-		die(errno, "Levyx/helium shared library: %s", HELIUM_PATH);
+		testutil_die(errno, "Helium shared library: %s", HELIUM_PATH);
 	if (DATASOURCE("kvsbdb") && access(KVS_BDB_PATH, R_OK) != 0)
-		die(errno, "kvsbdb shared library: %s", KVS_BDB_PATH);
+		testutil_die(errno, "kvsbdb shared library: %s", KVS_BDB_PATH);
 
 	/* Some data-sources don't support user-specified collations. */
-	if (DATASOURCE("helium") || DATASOURCE("kvsbdb"))
-		g.c_reverse = 0;
-
-	config_checksum();
-	config_compression("compression");
-	config_compression("logging_compression");
-	config_encryption();
-	config_isolation();
+	if (DATASOURCE("kvsbdb"))
+		config_single("reverse=off", 0);
 
 	/*
 	 * Periodically, run single-threaded so we can compare the results to
@@ -149,29 +161,37 @@ config_setup(void)
 	if (!g.replay && g.run_cnt % 20 == 19 && !config_is_perm("threads"))
 		g.c_threads = 1;
 
-	/*
-	 * Periodically, set the delete percentage to 0 so salvage gets run,
-	 * as long as the delete percentage isn't nailed down.
-	 * Don't do it on the first run, all our smoke tests would hit it.
-	 */
-	if (!g.replay && g.run_cnt % 10 == 9 && !config_is_perm("delete_pct"))
-		g.c_delete_pct = 0;
+	config_checkpoint();
+	config_checksum();
+	config_compression("compression");
+	config_compression("logging_compression");
+	config_encryption();
+	config_isolation();
+	config_lrt();
+	config_pct();
 
 	/*
-	 * If this is an LSM run, set the cache size and crank up the insert
-	 * percentage.
+	 * If this is an LSM run, ensure cache size sanity.
+	 * Ensure there is at least 1MB of cache per thread.
 	 */
-	if (DATASOURCE("lsm")) {
-		if (!config_is_perm("cache"))
+	if (!config_is_perm("cache")) {
+		if (DATASOURCE("lsm"))
 			g.c_cache = 30 * g.c_chunk_size;
-
-		if (!config_is_perm("insert_pct"))
-			g.c_insert_pct = mmrand(NULL, 50, 85);
+		if (g.c_cache < g.c_threads)
+			g.c_cache = g.c_threads;
 	}
 
-	/* Make the default maximum-run length 20 minutes. */
-	if (!config_is_perm("timer"))
-		g.c_timer = 20;
+	/* Check if a minimum cache size has been specified. */
+	if (g.c_cache_minimum != 0 && g.c_cache < g.c_cache_minimum)
+		g.c_cache = g.c_cache_minimum;
+
+	/* Give Helium configuration a final review. */
+	if (DATASOURCE("helium"))
+		config_helium_reset();
+
+	/* Give in-memory configuration a final review. */
+	if (g.c_in_memory != 0)
+		config_in_memory_reset();
 
 	/*
 	 * Key/value minimum/maximum are related, correct unless specified by
@@ -182,17 +202,64 @@ config_setup(void)
 	if (!config_is_perm("key_max") && g.c_key_max < g.c_key_min)
 		g.c_key_max = g.c_key_min;
 	if (g.c_key_min > g.c_key_max)
-		die(EINVAL, "key_min may not be larger than key_max");
+		testutil_die(EINVAL, "key_min may not be larger than key_max");
 
 	if (!config_is_perm("value_min") && g.c_value_min > g.c_value_max)
 		g.c_value_min = g.c_value_max;
 	if (!config_is_perm("value_max") && g.c_value_max < g.c_value_min)
 		g.c_value_max = g.c_value_min;
 	if (g.c_value_min > g.c_value_max)
-		die(EINVAL, "value_min may not be larger than value_max");
+		testutil_die(EINVAL,
+		    "value_min may not be larger than value_max");
+
+	/*
+	 * Run-length is configured by a number of operations and a timer.
+	 *
+	 * If the operation count and the timer are both configured, do nothing.
+	 * If only the timer is configured, clear the operations count.
+	 * If only the operation count is configured, limit the run to 6 hours.
+	 * If neither is configured, leave the operations count alone and limit
+	 * the run to 30 minutes.
+	 *
+	 * In other words, if we rolled the dice on everything, do a short run.
+	 * If we chose a number of operations but the rest of the configuration
+	 * means operations take a long time to complete (for example, a small
+	 * cache and many worker threads), don't let it run forever.
+	 */
+	if (config_is_perm("timer")) {
+		if (!config_is_perm("ops"))
+			config_single("ops=0", 0);
+	} else {
+		if (!config_is_perm("ops"))
+			config_single("timer=30", 0);
+		else
+			config_single("timer=360", 0);
+	}
 
 	/* Reset the key count. */
 	g.key_cnt = 0;
+}
+
+/*
+ * config_checkpoint --
+ *	Checkpoint configuration.
+ */
+static void
+config_checkpoint(void)
+{
+	/* Choose a checkpoint mode if nothing was specified. */
+	if (!config_is_perm("checkpoints"))
+		switch (mmrand(NULL, 1, 20)) {
+		case 1: case 2: case 3: case 4:		/* 20% */
+			config_single("checkpoints=wiredtiger", 0);
+			break;
+		case 5:					/* 5 % */
+			config_single("checkpoints=off", 0);
+			break;
+		default:				/* 75% */
+			config_single("checkpoints=on", 0);
+			break;
+		}
 }
 
 /*
@@ -224,48 +291,67 @@ config_checksum(void)
 static void
 config_compression(const char *conf_name)
 {
-	const char *cstr;
 	char confbuf[128];
+	const char *cstr;
+
+	/* Return if already specified. */
+	if (config_is_perm(conf_name))
+		return;
 
 	/*
-	 * Compression: choose something if compression wasn't specified,
-	 * otherwise confirm the appropriate shared library is available.
-	 * We used to verify that the libraries existed but that's no longer
-	 * robust, since it's possible to build compression libraries into
-	 * the WiredTiger library.
+	 * Don't configure a compression engine for logging if logging isn't
+	 * configured (it won't break, but it's confusing).
 	 */
-	if (!config_is_perm(conf_name)) {
-		cstr = "none";
-		switch (mmrand(NULL, 1, 20)) {
-		case 1: case 2: case 3: case 4:		/* 20% no compression */
-			break;
-		case 5:					/* 5% bzip */
-			cstr = "bzip";
-			break;
-		case 6:					/* 5% bzip-raw */
-			cstr = "bzip-raw";
-			break;
-		case 7: case 8: case 9: case 10:	/* 20% lz4 */
-			cstr = "lz4";
-			break;
-		case 11:				/* 5% lz4-no-raw */
-			cstr = "lz4-noraw";
-			break;
-		case 12: case 13: case 14: case 15:	/* 20% snappy */
-			cstr = "snappy";
-			break;
-		case 16: case 17: case 18: case 19:	/* 20% zlib */
-			cstr = "zlib";
-			break;
-		case 20:				/* 5% zlib-no-raw */
-			cstr = "zlib-noraw";
-			break;
-		}
-
-		(void)snprintf(confbuf, sizeof(confbuf), "%s=%s", conf_name,
-		    cstr);
+	cstr = "none";
+	if (strcmp(conf_name, "logging_compression") == 0 && g.c_logging == 0) {
+		testutil_check(__wt_snprintf(
+		    confbuf, sizeof(confbuf), "%s=%s", conf_name, cstr));
 		config_single(confbuf, 0);
+		return;
 	}
+
+	/*
+	 * Select a compression type from the list of built-in engines.
+	 *
+	 * Listed percentages are only correct if all of the possible engines
+	 * are compiled in.
+	 */
+	switch (mmrand(NULL, 1, 20)) {
+#ifdef HAVE_BUILTIN_EXTENSION_LZ4
+	case 1: case 2:				/* 10% lz4 */
+		cstr = "lz4";
+		break;
+	case 3:					/* 5% lz4-no-raw */
+		cstr = "lz4-noraw";
+		break;
+#endif
+#ifdef HAVE_BUILTIN_EXTENSION_SNAPPY
+	case 4: case 5: case 6: case 7:		/* 30% snappy */
+	case 8: case 9:
+		cstr = "snappy";
+		break;
+#endif
+#ifdef HAVE_BUILTIN_EXTENSION_ZLIB
+	case 10: case 11: case 12: case 13:	/* 20% zlib */
+		cstr = "zlib";
+		break;
+	case 14:				/* 5% zlib-no-raw */
+		cstr = "zlib-noraw";
+		break;
+#endif
+#ifdef HAVE_BUILTIN_EXTENSION_ZSTD
+	case 15: case 16: case 17:		/* 15% zstd */
+		cstr = "zstd";
+		break;
+#endif
+	case 18: case 19: case 20:		/* 15% no compression */
+	default:
+		break;
+	}
+
+	testutil_check(__wt_snprintf(
+	    confbuf, sizeof(confbuf), "%s=%s", conf_name, cstr));
+	config_single(confbuf, 0);
 }
 
 /*
@@ -292,6 +378,122 @@ config_encryption(void)
 		}
 
 		config_single(cstr, 0);
+	}
+}
+
+/*
+ * config_helium_reset --
+ *	Helium configuration review.
+ */
+static void
+config_helium_reset(void)
+{
+	/* Turn off a lot of stuff. */
+	if (!config_is_perm("alter"))
+		config_single("alter=off", 0);
+	if (!config_is_perm("backups"))
+		config_single("backups=off", 0);
+	if (!config_is_perm("checkpoints"))
+		config_single("checkpoints=off", 0);
+	if (!config_is_perm("compression"))
+		config_single("compression=none", 0);
+	if (!config_is_perm("in_memory"))
+		config_single("in_memory=off", 0);
+	if (!config_is_perm("logging"))
+		config_single("logging=off", 0);
+	if (!config_is_perm("rebalance"))
+		config_single("rebalance=off", 0);
+	if (!config_is_perm("reverse"))
+		config_single("reverse=off", 0);
+	if (!config_is_perm("salvage"))
+		config_single("salvage=off", 0);
+	if (!config_is_perm("transaction_timestamps"))
+		config_single("transaction_timestamps=off", 0);
+}
+
+/*
+ * config_in_memory --
+ *	Periodically set up an in-memory configuration.
+ */
+static void
+config_in_memory(void)
+{
+	/*
+	 * Configure in-memory before configuring anything else, in-memory has
+	 * many related requirements. Don't configure in-memory if there's any
+	 * incompatible configurations, so we don't have to configure in-memory
+	 * every time we configure something like LSM, that's too painful.
+	 */
+	if (config_is_perm("backups"))
+		return;
+	if (config_is_perm("checkpoints"))
+		return;
+	if (config_is_perm("compression"))
+		return;
+	if (config_is_perm("data_source") && DATASOURCE("lsm"))
+		return;
+	if (config_is_perm("logging"))
+		return;
+	if (config_is_perm("rebalance"))
+		return;
+	if (config_is_perm("salvage"))
+		return;
+	if (config_is_perm("verify"))
+		return;
+
+	if (!config_is_perm("in_memory") && mmrand(NULL, 1, 20) == 1)
+		g.c_in_memory = 1;
+}
+
+/*
+ * config_in_memory_reset --
+ *	In-memory configuration review.
+ */
+static void
+config_in_memory_reset(void)
+{
+	uint32_t cache;
+
+	/* Turn off a lot of stuff. */
+	if (!config_is_perm("alter"))
+		config_single("alter=off", 0);
+	if (!config_is_perm("backups"))
+		config_single("backups=off", 0);
+	if (!config_is_perm("checkpoints"))
+		config_single("checkpoints=off", 0);
+	if (!config_is_perm("compression"))
+		config_single("compression=none", 0);
+	if (!config_is_perm("logging"))
+		config_single("logging=off", 0);
+	if (!config_is_perm("rebalance"))
+		config_single("rebalance=off", 0);
+	if (!config_is_perm("salvage"))
+		config_single("salvage=off", 0);
+	if (!config_is_perm("verify"))
+		config_single("verify=off", 0);
+
+	/*
+	 * Keep keys/values small, overflow items aren't an issue for in-memory
+	 * configurations and it keeps us from overflowing the cache.
+	 */
+	if (!config_is_perm("key_max"))
+		config_single("key_max=32", 0);
+	if (!config_is_perm("value_max"))
+		config_single("value_max=80", 0);
+
+	/*
+	 * Size the cache relative to the initial data set, use 2x the base
+	 * size as a minimum.
+	 */
+	if (!config_is_perm("cache")) {
+		cache = g.c_value_max;
+		if (g.type == ROW)
+			cache += g.c_key_max;
+		cache *= g.c_rows;
+		cache *= 2;
+		cache /= WT_MEGABYTE;
+		if (g.c_cache < cache)
+			g.c_cache = cache;
 	}
 }
 
@@ -329,6 +531,133 @@ config_isolation(void)
 }
 
 /*
+ * config_lrt --
+ *	Long-running transaction configuration.
+ */
+static void
+config_lrt(void)
+{
+	/*
+	 * WiredTiger doesn't support a lookaside file for fixed-length column
+	 * stores.
+	 */
+	if (g.type == FIX) {
+		if (config_is_perm("long_running_txn") && g.c_long_running_txn)
+			testutil_die(EINVAL,
+			    "long_running_txn not supported with fixed-length "
+			    "column store");
+		config_single("long_running_txn=off", 0);
+	}
+}
+
+/*
+ * config_pct --
+ *	Configure operation percentages.
+ */
+static void
+config_pct(void)
+{
+	static struct {
+		const char *name;		/* Operation */
+		uint32_t  *vp;			/* Value store */
+		u_int	   order;		/* Order of assignment */
+	} list[] = {
+#define	CONFIG_DELETE_ENTRY	0
+		{ "delete_pct", &g.c_delete_pct, 0 },
+		{ "insert_pct", &g.c_insert_pct, 0 },
+#define	CONFIG_MODIFY_ENTRY	2
+		{ "modify_pct", &g.c_modify_pct, 0 },
+		{ "read_pct", &g.c_read_pct, 0 },
+		{ "write_pct", &g.c_write_pct, 0 },
+	};
+	u_int i, max_order, max_slot, n, pct;
+
+	/*
+	 * Walk the list of operations, checking for an illegal configuration
+	 * and creating a random order in the list.
+	 */
+	pct = 0;
+	for (i = 0; i < WT_ELEMENTS(list); ++i)
+		if (config_is_perm(list[i].name))
+			pct += *list[i].vp;
+		else
+			list[i].order = mmrand(NULL, 1, 1000);
+	if (pct > 100)
+		testutil_die(EINVAL,
+		    "operation percentages do not total to 100%%");
+
+	/* Cursor modify isn't possible for fixed-length column store. */
+	if (g.type == FIX) {
+		if (config_is_perm("modify_pct"))
+			testutil_die(EINVAL,
+			    "WT_CURSOR.modify not supported by fixed-length "
+			    "column store");
+		list[CONFIG_MODIFY_ENTRY].order = 0;
+		*list[CONFIG_MODIFY_ENTRY].vp = 0;
+	}
+
+	/*
+	 * Cursor modify isn't possible for read-uncommitted transactions.
+	 * If both forced, it's an error, else, prefer the forced one, else,
+	 * prefer modify operations.
+	 */
+	if (g.c_isolation_flag == ISOLATION_READ_UNCOMMITTED) {
+		if (config_is_perm("isolation")) {
+			if (config_is_perm("modify_pct"))
+				testutil_die(EINVAL,
+				    "WT_CURSOR.modify not supported with "
+				    "read-uncommitted transactions");
+			list[CONFIG_MODIFY_ENTRY].order = 0;
+			*list[CONFIG_MODIFY_ENTRY].vp = 0;
+		} else
+			config_single("isolation=random", 0);
+	}
+
+	/*
+	 * If the delete percentage isn't nailed down, periodically set it to
+	 * 0 so salvage gets run. Don't do it on the first run, all our smoke
+	 * tests would hit it.
+	 */
+	if (!config_is_perm("delete_pct") && !g.replay && g.run_cnt % 10 == 9) {
+		list[CONFIG_DELETE_ENTRY].order = 0;
+		*list[CONFIG_DELETE_ENTRY].vp = 0;
+	}
+
+	/*
+	 * Walk the list, allocating random numbers of operations in a random
+	 * order.
+	 *
+	 * If the "order" field is non-zero, we need to create a value for this
+	 * operation. Find the largest order field in the array; if one non-zero
+	 * order field is found, it's the last entry and gets the remainder of
+	 * the operations.
+	 */
+	for (pct = 100 - pct;;) {
+		for (i = n =
+		    max_order = max_slot = 0; i < WT_ELEMENTS(list); ++i) {
+			if (list[i].order != 0)
+				++n;
+			if (list[i].order > max_order) {
+				max_order = list[i].order;
+				max_slot = i;
+			}
+		}
+		if (n == 0)
+			break;
+		if (n == 1) {
+			*list[max_slot].vp = pct;
+			break;
+		}
+		*list[max_slot].vp = mmrand(NULL, 0, pct);
+		list[max_slot].order = 0;
+		pct -= *list[max_slot].vp;
+	}
+
+	testutil_assert(g.c_delete_pct + g.c_insert_pct +
+	    g.c_modify_pct + g.c_read_pct + g.c_write_pct == 100);
+}
+
+/*
  * config_error --
  *	Display configuration information on error.
  */
@@ -362,7 +691,7 @@ config_print(int error_display)
 		fp = stdout;
 	else
 		if ((fp = fopen(g.home_config, "w")) == NULL)
-			die(errno, "fopen: %s", g.home_config);
+			testutil_die(errno, "fopen: %s", g.home_config);
 
 	fprintf(fp, "############################################\n");
 	fprintf(fp, "#  RUN PARAMETERS\n");
@@ -393,10 +722,10 @@ void
 config_file(const char *name)
 {
 	FILE *fp;
-	char *p, buf[256];
+	char buf[256], *p;
 
 	if ((fp = fopen(name, "r")) == NULL)
-		die(errno, "fopen: %s", name);
+		testutil_die(errno, "fopen: %s", name);
 	while (fgets(buf, sizeof(buf), fp) != NULL) {
 		for (p = buf; *p != '\0' && *p != '\n'; ++p)
 			;
@@ -410,24 +739,71 @@ config_file(const char *name)
 
 /*
  * config_clear --
- *	Clear per-run values.
+ *	Clear all configuration values.
  */
 void
 config_clear(void)
 {
 	CONFIG *cp;
 
-	/* Clear configuration data. */
+	/* Clear all allocated configuration data. */
+	for (cp = c; cp->name != NULL; ++cp)
+		if (cp->vstr != NULL) {
+			free((void *)*cp->vstr);
+			*cp->vstr = NULL;
+		}
+	free(g.uri);
+	g.uri = NULL;
+}
+
+/*
+ * config_reset --
+ *	Clear per-run configuration values.
+ */
+static void
+config_reset(void)
+{
+	CONFIG *cp;
+
+	/* Clear temporary allocated configuration data. */
 	for (cp = c; cp->name != NULL; ++cp) {
 		F_CLR(cp, C_TEMP);
-		if (!F_ISSET(cp, C_PERM) &&
-		    F_ISSET(cp, C_STRING) && cp->vstr != NULL) {
-			free(*cp->vstr);
+		if (!F_ISSET(cp, C_PERM) && cp->vstr != NULL) {
+			free((void *)*cp->vstr);
 			*cp->vstr = NULL;
 		}
 	}
 	free(g.uri);
 	g.uri = NULL;
+}
+
+/*
+ * config_find
+ *	Find a specific configuration entry.
+ */
+static CONFIG *
+config_find(const char *s, size_t len, bool fatal)
+{
+	CONFIG *cp;
+
+	for (cp = c; cp->name != NULL; ++cp)
+		if (strncmp(s, cp->name, len) == 0 && cp->name[len] == '\0')
+			return (cp);
+
+	/*
+	 * Optionally ignore unknown keywords, it makes it easier to run old
+	 * CONFIG files.
+	 */
+	if (fatal) {
+		fprintf(stderr,
+		    "%s: %s: unknown required configuration keyword\n",
+		    progname, s);
+		exit(EXIT_FAILURE);
+	}
+	fprintf(stderr,
+	    "%s: %s: WARNING, ignoring unknown configuration keyword\n",
+	    progname, s);
+	return (NULL);
 }
 
 /*
@@ -438,17 +814,20 @@ void
 config_single(const char *s, int perm)
 {
 	CONFIG *cp;
+	long vlong;
 	uint32_t v;
 	char *p;
 	const char *ep;
 
 	if ((ep = strchr(s, '=')) == NULL) {
 		fprintf(stderr,
-		    "%s: %s: illegal configuration value\n", g.progname, s);
+		    "%s: %s: illegal configuration value\n", progname, s);
 		exit(EXIT_FAILURE);
 	}
 
-	cp = config_find(s, (size_t)(ep - s));
+	if ((cp = config_find(s, (size_t)(ep - s), false)) == NULL)
+		return;
+
 	F_SET(cp, perm ? C_PERM : C_TEMP);
 	++ep;
 
@@ -464,54 +843,74 @@ config_single(const char *s, int perm)
 			    exit(EXIT_FAILURE);
 		}
 
-		if (strncmp(s, "checksum", strlen("checksum")) == 0) {
+		/*
+		 * Free the previous setting if a configuration has been
+		 * passed in twice.
+		 */
+		if (*cp->vstr != NULL) {
+			free(*cp->vstr);
+			*cp->vstr = NULL;
+		}
+
+		if (strncmp(s, "checkpoints", strlen("checkpoints")) == 0) {
+			config_map_checkpoint(ep, &g.c_checkpoint_flag);
+			*cp->vstr = dstrdup(ep);
+		} else if (strncmp(s, "checksum", strlen("checksum")) == 0) {
 			config_map_checksum(ep, &g.c_checksum_flag);
-			*cp->vstr = strdup(ep);
+			*cp->vstr = dstrdup(ep);
 		} else if (strncmp(
 		    s, "compression", strlen("compression")) == 0) {
 			config_map_compression(ep, &g.c_compression_flag);
-			*cp->vstr = strdup(ep);
+			*cp->vstr = dstrdup(ep);
 		} else if (strncmp(
 		    s, "encryption", strlen("encryption")) == 0) {
 			config_map_encryption(ep, &g.c_encryption_flag);
-			*cp->vstr = strdup(ep);
-		} else if (strncmp(s, "isolation", strlen("isolation")) == 0) {
-			config_map_isolation(ep, &g.c_isolation_flag);
-			*cp->vstr = strdup(ep);
+			*cp->vstr = dstrdup(ep);
 		} else if (strncmp(s, "file_type", strlen("file_type")) == 0) {
 			config_map_file_type(ep, &g.type);
-			*cp->vstr = strdup(config_file_type(g.type));
+			*cp->vstr = dstrdup(config_file_type(g.type));
+		} else if (strncmp(s, "isolation", strlen("isolation")) == 0) {
+			config_map_isolation(ep, &g.c_isolation_flag);
+			*cp->vstr = dstrdup(ep);
 		} else if (strncmp(s, "logging_compression",
 		    strlen("logging_compression")) == 0) {
 			config_map_compression(ep,
 			    &g.c_logging_compression_flag);
-			*cp->vstr = strdup(ep);
+			*cp->vstr = dstrdup(ep);
 		} else {
-			free(*cp->vstr);
-			*cp->vstr = strdup(ep);
+			free((void *)*cp->vstr);
+			*cp->vstr = dstrdup(ep);
 		}
-		if (*cp->vstr == NULL)
-			die(errno, "malloc");
 
 		return;
 	}
 
-	v = (uint32_t)strtoul(ep, &p, 10);
-	if (*p != '\0') {
-		fprintf(stderr, "%s: %s: illegal numeric value\n",
-		    g.progname, s);
-		exit(EXIT_FAILURE);
+	vlong = -1;
+	if (F_ISSET(cp, C_BOOL)) {
+		if (strncmp(ep, "off", strlen("off")) == 0)
+			vlong = 0;
+		else if (strncmp(ep, "on", strlen("on")) == 0)
+			vlong = 1;
 	}
+	if (vlong == -1) {
+		vlong = strtol(ep, &p, 10);
+		if (*p != '\0') {
+			fprintf(stderr, "%s: %s: illegal numeric value\n",
+			    progname, s);
+			exit(EXIT_FAILURE);
+		}
+	}
+	v = (uint32_t)vlong;
 	if (F_ISSET(cp, C_BOOL)) {
 		if (v != 0 && v != 1) {
 			fprintf(stderr, "%s: %s: value of boolean not 0 or 1\n",
-			    g.progname, s);
+			    progname, s);
 			exit(EXIT_FAILURE);
 		}
 	} else if (v < cp->min || v > cp->maxset) {
 		fprintf(stderr, "%s: %s: value outside min/max values of %"
 		    PRIu32 "-%" PRIu32 "\n",
-		    g.progname, s, cp->min, cp->maxset);
+		    progname, s, cp->min, cp->maxset);
 		exit(EXIT_FAILURE);
 	}
 	*cp->v = v;
@@ -534,7 +933,25 @@ config_map_file_type(const char *s, u_int *vp)
 	    strcmp(s, "row-store") == 0)
 		*vp = ROW;
 	else
-		die(EINVAL, "illegal file type configuration: %s", s);
+		testutil_die(EINVAL, "illegal file type configuration: %s", s);
+}
+
+/*
+ * config_map_checkpoint --
+ *	Map a checkpoint configuration to a flag.
+ */
+static void
+config_map_checkpoint(const char *s, u_int *vp)
+{
+	/* Checkpoint configuration used to be 1/0, let it continue to work. */
+	if (strcmp(s, "on") == 0 || strcmp(s, "1") == 0)
+		*vp = CHECKPOINT_ON;
+	else if (strcmp(s, "off") == 0 || strcmp(s, "0") == 0)
+		*vp = CHECKPOINT_OFF;
+	else if (strcmp(s, "wiredtiger") == 0)
+		*vp = CHECKPOINT_WIREDTIGER;
+	else
+		testutil_die(EINVAL, "illegal checkpoint configuration: %s", s);
 }
 
 /*
@@ -551,7 +968,7 @@ config_map_checksum(const char *s, u_int *vp)
 	else if (strcmp(s, "uncompressed") == 0)
 		*vp = CHECKSUM_UNCOMPRESSED;
 	else
-		die(EINVAL, "illegal checksum configuration: %s", s);
+		testutil_die(EINVAL, "illegal checksum configuration: %s", s);
 }
 
 /*
@@ -563,10 +980,6 @@ config_map_compression(const char *s, u_int *vp)
 {
 	if (strcmp(s, "none") == 0)
 		*vp = COMPRESS_NONE;
-	else if (strcmp(s, "bzip") == 0)
-		*vp = COMPRESS_BZIP;
-	else if (strcmp(s, "bzip-raw") == 0)
-		*vp = COMPRESS_BZIP_RAW;
 	else if (strcmp(s, "lz4") == 0)
 		*vp = COMPRESS_LZ4;
 	else if (strcmp(s, "lz4-noraw") == 0)
@@ -579,8 +992,11 @@ config_map_compression(const char *s, u_int *vp)
 		*vp = COMPRESS_ZLIB;
 	else if (strcmp(s, "zlib-noraw") == 0)
 		*vp = COMPRESS_ZLIB_NO_RAW;
+	else if (strcmp(s, "zstd") == 0)
+		*vp = COMPRESS_ZSTD;
 	else
-		die(EINVAL, "illegal compression configuration: %s", s);
+		testutil_die(EINVAL,
+		    "illegal compression configuration: %s", s);
 }
 
 /*
@@ -595,7 +1011,7 @@ config_map_encryption(const char *s, u_int *vp)
 	else if (strcmp(s, "rotn-7") == 0)
 		*vp = ENCRYPT_ROTN_7;
 	else
-		die(EINVAL, "illegal encryption configuration: %s", s);
+		testutil_die(EINVAL, "illegal encryption configuration: %s", s);
 }
 
 /*
@@ -614,26 +1030,7 @@ config_map_isolation(const char *s, u_int *vp)
 	else if (strcmp(s, "snapshot") == 0)
 		*vp = ISOLATION_SNAPSHOT;
 	else
-		die(EINVAL, "illegal isolation configuration: %s", s);
-}
-
-/*
- * config_find
- *	Find a specific configuration entry.
- */
-static CONFIG *
-config_find(const char *s, size_t len)
-{
-	CONFIG *cp;
-
-	for (cp = c; cp->name != NULL; ++cp) 
-		if (strncmp(s, cp->name, len) == 0 && cp->name[len] == '\0')
-			return (cp);
-
-	fprintf(stderr,
-	    "%s: %s: unknown configuration keyword\n", g.progname, s);
-	config_error();
-	exit(EXIT_FAILURE);
+		testutil_die(EINVAL, "illegal isolation configuration: %s", s);
 }
 
 /*
@@ -645,7 +1042,7 @@ config_is_perm(const char *s)
 {
 	CONFIG *cp;
 
-	cp = config_find(s, strlen(s));
+	cp = config_find(s, strlen(s), true);
 	return (F_ISSET(cp, C_PERM) ? 1 : 0);
 }
 

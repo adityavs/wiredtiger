@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -29,42 +29,30 @@
  *	This is an example demonstrating how to parse WiredTiger compatible
  *	configuration strings.
  */
-
-#include <stdio.h>
-#include <string.h>
-
-#include <wiredtiger.h>
+#include <test_util.h>
 
 int
-main(void)
+main(int argc, char *argv[])
 {
 	int ret;
 
+	(void)argc;					/* Unused variable */
+	(void)testutil_set_progname(argv);
+
+	{
 	/*! [Create a configuration parser] */
 	WT_CONFIG_ITEM k, v;
 	WT_CONFIG_PARSER *parser;
 	const char *config_string =
 	    "path=/dev/loop,page_size=1024,log=(archive=true,file_max=20MB)";
 
-	if ((ret = wiredtiger_config_parser_open(
-	    NULL, config_string, strlen(config_string), &parser)) != 0) {
-		fprintf(stderr, "Error creating configuration parser: %s\n",
-		    wiredtiger_strerror(ret));
-		return (ret);
-	}
-	if ((ret = parser->close(parser)) != 0) {
-		fprintf(stderr, "Error closing configuration parser: %s\n",
-		    wiredtiger_strerror(ret));
-		return (ret);
-	}
+	error_check(wiredtiger_config_parser_open(
+	    NULL, config_string, strlen(config_string), &parser));
+	error_check(parser->close(parser));
 	/*! [Create a configuration parser] */
 
-	if ((ret = wiredtiger_config_parser_open(
-	    NULL, config_string, strlen(config_string), &parser)) != 0) {
-		fprintf(stderr, "Error creating configuration parser: %s\n",
-		    wiredtiger_strerror(ret));
-		return (ret);
-	}
+	error_check(wiredtiger_config_parser_open(
+	    NULL, config_string, strlen(config_string), &parser));
 
 	{
 	/*! [get] */
@@ -72,26 +60,17 @@ main(void)
 	/*
 	 * Retrieve the value of the integer configuration string "page_size".
 	 */
-	if ((ret = parser->get(parser, "page_size", &v)) != 0) {
-		fprintf(stderr,
-		    "page_size configuration: %s", wiredtiger_strerror(ret));
-		return (ret);
-	}
+	error_check(parser->get(parser, "page_size", &v));
 	my_page_size = v.val;
 	/*! [get] */
 
-	ret = parser->close(parser);
-
-	(void)my_page_size;
+	error_check(parser->close(parser));
+	(void)my_page_size;				/* Unused variable */
 	}
 
 	{
-	if ((ret = wiredtiger_config_parser_open(
-	    NULL, config_string, strlen(config_string), &parser)) != 0) {
-		fprintf(stderr, "Error creating configuration parser: %s\n",
-		    wiredtiger_strerror(ret));
-		return (ret);
-	}
+	error_check(wiredtiger_config_parser_open(
+	    NULL, config_string, strlen(config_string), &parser));
 	/*! [next] */
 	/*
 	 * Retrieve and print the values of the configuration strings.
@@ -99,20 +78,17 @@ main(void)
 	while ((ret = parser->next(parser, &k, &v)) == 0) {
 		printf("%.*s:", (int)k.len, k.str);
 		if (v.type == WT_CONFIG_ITEM_NUM)
-			printf("%d\n", (int)v.val);
+			printf("%" PRId64 "\n", v.val);
 		else
 			printf("%.*s\n", (int)v.len, v.str);
 	}
+	scan_end_check(ret == WT_NOTFOUND);
 	/*! [next] */
-	ret = parser->close(parser);
+	error_check(parser->close(parser));
 	}
 
-	if ((ret = wiredtiger_config_parser_open(
-	    NULL, config_string, strlen(config_string), &parser)) != 0) {
-		fprintf(stderr, "Error creating configuration parser: %s\n",
-		    wiredtiger_strerror(ret));
-		return (ret);
-	}
+	error_check(wiredtiger_config_parser_open(
+	    NULL, config_string, strlen(config_string), &parser));
 
 	/*! [nested get] */
 	/*
@@ -121,21 +97,13 @@ main(void)
 	 * conversion of value strings into an integer.
 	 */
 	v.type = WT_CONFIG_ITEM_NUM;
-	if ((ret = parser->get(parser, "log.file_max", &v)) != 0) {
-		fprintf(stderr,
-		    "log.file_max configuration: %s", wiredtiger_strerror(ret));
-		return (ret);
-	}
-	printf("log file max: %d\n", (int)v.val);
+	error_check(parser->get(parser, "log.file_max", &v));
+	printf("log file max: %" PRId64 "\n", v.val);
 	/*! [nested get] */
-	ret = parser->close(parser);
+	error_check(parser->close(parser));
 
-	if ((ret = wiredtiger_config_parser_open(
-	    NULL, config_string, strlen(config_string), &parser)) != 0) {
-		fprintf(stderr, "Error creating configuration parser: %s\n",
-		    wiredtiger_strerror(ret));
-		return (ret);
-	}
+	error_check(wiredtiger_config_parser_open(
+	    NULL, config_string, strlen(config_string), &parser));
 	/*! [nested traverse] */
 	{
 	WT_CONFIG_PARSER *sub_parser;
@@ -143,24 +111,20 @@ main(void)
 		if (v.type == WT_CONFIG_ITEM_STRUCT) {
 			printf("Found nested configuration: %.*s\n",
 			    (int)k.len, k.str);
-			if ((ret = wiredtiger_config_parser_open(
-			    NULL, v.str, v.len, &sub_parser)) != 0) {
-				fprintf(stderr,
-				    "Error creating nested configuration "
-				    "parser: %s\n",
-				    wiredtiger_strerror(ret));
-				ret = parser->close(parser);
-				return (ret);
-			}
-			while ((ret = sub_parser->next(
-			    sub_parser, &k, &v)) == 0)
+			error_check(wiredtiger_config_parser_open(
+			    NULL, v.str, v.len, &sub_parser));
+			while ((ret =
+			    sub_parser->next(sub_parser, &k, &v)) == 0)
 				printf("\t%.*s\n", (int)k.len, k.str);
-			ret = sub_parser->close(sub_parser);
+			scan_end_check(ret == WT_NOTFOUND);
+			error_check(sub_parser->close(sub_parser));
 		}
 	}
+	scan_end_check(ret == WT_NOTFOUND);
 	/*! [nested traverse] */
-	ret = parser->close(parser);
+	error_check(parser->close(parser));
+	}
 	}
 
-	return (ret);
+	return (EXIT_SUCCESS);
 }

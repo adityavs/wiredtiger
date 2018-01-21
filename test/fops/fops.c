@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -28,7 +28,7 @@
 
 #include "thread.h"
 
-static void *fop(void *);
+static WT_THREAD_RET fop(void *);
 static void  print_stats(u_int);
 
 typedef struct {
@@ -39,41 +39,37 @@ typedef struct {
 	int create_unique;			/* session.create of new file */
 	int cursor;				/* session.open_cursor */
 	int drop;				/* session.drop */
+	int rebalance;				/* session.rebalance */
 	int upgrade;				/* session.upgrade */
 	int verify;				/* session.verify */
 } STATS;
 
 static STATS *run_stats;
 
-int
+void
 fop_start(u_int nthreads)
 {
 	struct timeval start, stop;
+	wt_thread_t *tids;
 	double seconds;
-	pthread_t *tids;
 	u_int i;
-	int ret;
-	void *thread_ret;
 
 	tids = NULL; /* Silence GCC 4.1 warning. */
 
 	/* Create statistics and thread structures. */
-	if ((run_stats = calloc(
-	    (size_t)(nthreads), sizeof(*run_stats))) == NULL ||
-	    (tids = calloc((size_t)(nthreads), sizeof(*tids))) == NULL)
-		testutil_die(errno, "calloc");
+	run_stats = dcalloc((size_t)(nthreads), sizeof(*run_stats));
+	tids = dcalloc((size_t)(nthreads), sizeof(*tids));
 
 	(void)gettimeofday(&start, NULL);
 
 	/* Create threads. */
 	for (i = 0; i < nthreads; ++i)
-		if ((ret = pthread_create(
-		    &tids[i], NULL, fop, (void *)(uintptr_t)i)) != 0)
-			testutil_die(ret, "pthread_create");
+		testutil_check(__wt_thread_create(
+		    NULL, &tids[i], fop, (void *)(uintptr_t)i));
 
 	/* Wait for the threads. */
 	for (i = 0; i < nthreads; ++i)
-		(void)pthread_join(tids[i], &thread_ret);
+		testutil_check(__wt_thread_join(NULL, tids[i]));
 
 	(void)gettimeofday(&stop, NULL);
 	seconds = (stop.tv_sec - start.tv_sec) +
@@ -85,30 +81,28 @@ fop_start(u_int nthreads)
 
 	free(run_stats);
 	free(tids);
-
-	return (0);
 }
 
 /*
  * fop --
  *	File operation function.
  */
-static void *
+static WT_THREAD_RET
 fop(void *arg)
 {
 	STATS *s;
 	uintptr_t id;
-	uint64_t rnd;
+	WT_RAND_STATE rnd;
 	u_int i;
 
 	id = (uintptr_t)arg;
-	sched_yield();		/* Get all the threads created. */
+	__wt_yield();		/* Get all the threads created. */
 
 	s = &run_stats[id];
 	__wt_random_init(&rnd);
 
-	for (i = 0; i < nops; ++i, sched_yield())
-		switch (__wt_random(&rnd) % 9) {
+	for (i = 0; i < nops; ++i, __wt_yield())
+		switch (__wt_random(&rnd) % 10) {
 		case 0:
 			++s->bulk;
 			obj_bulk();
@@ -134,20 +128,24 @@ fop(void *arg)
 			obj_upgrade();
 			break;
 		case 6:
+			++s->rebalance;
+			obj_rebalance();
+			break;
+		case 7:
 			++s->verify;
 			obj_verify();
 			break;
-		case 7:
+		case 8:
 			++s->bulk_unique;
 			obj_bulk_unique(__wt_random(&rnd) & 1);
 			break;
-		case 8:
+		case 9:
 			++s->create_unique;
 			obj_create_unique(__wt_random(&rnd) & 1);
 			break;
 		}
 
-	return (NULL);
+	return (WT_THREAD_RET_VALUE);
 }
 
 /*
@@ -163,9 +161,10 @@ print_stats(u_int nthreads)
 	s = run_stats;
 	for (id = 0; id < nthreads; ++id, ++s)
 		printf(
-		    "%2d: bulk %3d, ckpt %3d, create %3d, cursor %3d, "
-		    "drop %3d, upg %3d, vrfy %3d\n",
+		    "%2u:"
+		    "\t" "bulk %3d, checkpoint %3d, create %3d, cursor %3d,\n"
+		    "\t" "drop %3d, rebalance %3d, upgrade %3d, verify %3d\n",
 		    id, s->bulk + s->bulk_unique, s->ckpt,
 		    s->create + s->create_unique, s->cursor,
-		    s->drop, s->upgrade, s->verify);
+		    s->drop, s->rebalance, s->upgrade, s->verify);
 }

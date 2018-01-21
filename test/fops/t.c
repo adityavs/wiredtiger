@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -28,20 +28,21 @@
 
 #include "thread.h"
 
+bool use_txn;					/* Operations with user txn */
 WT_CONNECTION *conn;				/* WiredTiger connection */
 pthread_rwlock_t single;			/* Single thread */
 u_int nops;					/* Operations */
 const char *uri;				/* Object */
 const char *config;				/* Object config */
 
-static char *progname;				/* Program name */
 static FILE *logfp;				/* Log file */
 
 static char home[512];
 
 static int  handle_error(WT_EVENT_HANDLER *, WT_SESSION *, int, const char *);
 static int  handle_message(WT_EVENT_HANDLER *, WT_SESSION *, const char *);
-static void onint(int);
+static void onint(int)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 static void shutdown(void);
 static int  usage(void);
 static void wt_startup(char *);
@@ -67,26 +68,19 @@ main(int argc, char *argv[])
 		{ NULL,		NULL, NULL }
 	};
 	u_int nthreads;
-	int ch, cnt, ret, runs;
+	int ch, cnt, runs;
 	char *config_open, *working_dir;
 
-	working_dir = NULL;
+	(void)testutil_set_progname(argv);
 
-	/* Remove directories */
-	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		progname = argv[0];
-	else
-		++progname;
+	testutil_check(pthread_rwlock_init(&single, NULL));
 
-	if ((ret = pthread_rwlock_init(&single, NULL)) != 0)
-		testutil_die(ret, "pthread_rwlock_init: single");
-
-	config_open = NULL;
 	nops = 1000;
 	nthreads = 10;
 	runs = 1;
-
-	while ((ch = __wt_getopt(progname, argc, argv, "C:h:l:n:r:t:")) != EOF)
+	use_txn = false;
+	config_open = working_dir = NULL;
+	while ((ch = __wt_getopt(progname, argc, argv, "C:h:l:n:r:t:x")) != EOF)
 		switch (ch) {
 		case 'C':			/* wiredtiger_open config */
 			config_open = __wt_optarg;
@@ -109,6 +103,9 @@ main(int argc, char *argv[])
 			break;
 		case 't':
 			nthreads = (u_int)atoi(__wt_optarg);
+			break;
+		case 'x':
+			use_txn = true;
 			break;
 		default:
 			return (usage());
@@ -136,8 +133,7 @@ main(int argc, char *argv[])
 
 			wt_startup(config_open);
 
-			if (fop_start(nthreads))
-				return (EXIT_FAILURE);
+			fop_start(nthreads);
 
 			wt_shutdown();
 			printf("\n");
@@ -159,19 +155,17 @@ wt_startup(char *config_open)
 		NULL,
 		NULL	/* Close handler. */
 	};
-	int ret;
 	char config_buf[128];
 
 	testutil_make_work_dir(home);
 
-	snprintf(config_buf, sizeof(config_buf),
+	testutil_check(__wt_snprintf(config_buf, sizeof(config_buf),
 	    "create,error_prefix=\"%s\",cache_size=5MB%s%s",
 	    progname,
 	    config_open == NULL ? "" : ",",
-	    config_open == NULL ? "" : config_open);
-	if ((ret = wiredtiger_open(
-	    home, &event_handler, config_buf, &conn)) != 0)
-		testutil_die(ret, "wiredtiger_open");
+	    config_open == NULL ? "" : config_open));
+	testutil_check(
+	    wiredtiger_open(home, &event_handler, config_buf, &conn));
 }
 
 /*
@@ -181,10 +175,7 @@ wt_startup(char *config_open)
 static void
 wt_shutdown(void)
 {
-	int ret;
-
-	if ((ret = conn->close(conn, NULL)) != 0)
-		testutil_die(ret, "conn.close");
+	testutil_check(conn->close(conn, NULL));
 }
 
 /*
@@ -224,6 +215,11 @@ handle_message(WT_EVENT_HANDLER *handler,
 	(void)(handler);
 	(void)(session);
 
+	/* Ignore messages about failing to create forced checkpoints. */
+	if (strstr(
+	    message, "forced or named checkpoint") != NULL)
+		return (0);
+
 	if (logfp != NULL)
 		return (fprintf(logfp, "%s\n", message) < 0 ? -1 : 0);
 
@@ -254,7 +250,8 @@ usage(void)
 {
 	fprintf(stderr,
 	    "usage: %s "
-	    "[-C wiredtiger-config] [-l log] [-n ops] [-r runs] [-t threads]\n",
+	    "[-C wiredtiger-config] [-l log] [-n ops] [-r runs] [-t threads] "
+	    "[-x] \n",
 	    progname);
 	fprintf(stderr, "%s",
 	    "\t-C specify wiredtiger_open configuration arguments\n"
@@ -262,6 +259,7 @@ usage(void)
 	    "\t-l specify a log file\n"
 	    "\t-n set number of operations each thread does\n"
 	    "\t-r set number of runs\n"
-	    "\t-t set number of threads\n");
+	    "\t-t set number of threads\n"
+	    "\t-x operations within user transaction \n");
 	return (EXIT_FAILURE);
 }

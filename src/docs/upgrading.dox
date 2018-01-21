@@ -1,5 +1,277 @@
 /*! @page upgrading Upgrading WiredTiger applications
 
+@section version_300 Upgrading to Version 3.0.0
+<dl>
+
+<dt>WiredTiger on-disk log file format change</dt>
+<dd>
+The WiredTiger on-disk file format for write-ahead log files has changed
+to include a new internal system log record.
+</dd>
+
+<dt>Addition of compatibility configuration setting</dt>
+<dd>
+There is now a compatibility setting that allows the user to upgrade or
+downgrade the log files generated so that they can be run with an older
+release.
+</dd>
+
+<dt>Cached overflow record statistics</dt>
+<dd>
+The \c cache_overflow_value ("overflow values cached in memory") statistic
+has been removed, it no longer has any meaning.
+</dd>
+
+<dt>Performance visualization tool wtstats</dt>
+<dd>
+The performance visualization tool \c wtstats has been removed and is
+no longer supported.
+</dd>
+
+</dl><hr>
+@section version_292 Upgrading to Version 2.9.2
+<dl>
+
+<dt>Logging subsystem statistics</dt>
+<dd>
+Two logging subsystem statistics have been removed as they were a duplicate of
+other statistics.  The \c log_slot_joins and \c log_slot_transitions statistics
+are no longer present.  They were duplicates of \c log_writes and
+\c log_slot_closes respectively.  Several new logging related statistics have
+been added.
+</dd>
+
+<dt>WiredTiger Utility now supports truncate</dt>
+<dd>
+The WiredTiger utility \c wt can now \c truncate objects, removing all
+contents from the specified object.
+</dd>
+
+<dt>Handle list lock statistics</dt>
+<dd>
+In the 2.9.1 release we added statistics tracking handle list lock timing, we
+have switched that lock from a spin lock to a read-write lock, and consequently
+changed the statistics tracking lock related wait time.
+</dd>
+
+<dt>Logging subsystem statistics</dt>
+<dd>
+Two logging subsystem statistics have been removed as they were a duplicate of
+other statistics.  The \c log_slot_joins and \c log_slot_transitions statistics
+are no longer present.  They were duplicates of \c log_writes and
+\c log_slot_closes respectively.  Several new logging related statistics have
+been added.
+</dd>
+
+<dt>Forced and named checkpoint error conditions changed</dt>
+<dd>
+There are new cases where checkpoints created with an explicit name or the
+"force" configuration option can return an EBUSY error. This can happen if
+the checkpoint overlaps with other schema operations, for example table create.
+</dd>
+
+<dt>WT_CURSOR::remove may not return a positioned cursor</dt>
+<dd>
+The WT_CURSOR::remove method was previously documented to always return a
+positioned cursor on success, which is not possible when \c overwrite=true
+and the record does not exist.
+
+The documentation has been updated, and the method has been changed to
+never return a cursor position unless called with an existing cursor
+position. In other words, if the cursor is positioned and the
+WT_CURSOR::remove is called, the cursor will remain positioned; if the
+cursor is not positioned and the WT_CURSOR::remove method is called, the
+cursor will not be positioned on return.
+</dd>
+
+</dl><hr>
+@section version_291 Upgrading to Version 2.9.1
+<dl>
+
+<dt>Changes to hazard pointer configuration</dt>
+<dd>
+The \c hazard_max parameter to ::wiredtiger_open is now ignored.  Memory is
+allocated for hazard pointers as required by each session.
+</dd>
+
+<dt>Change to the default fadvise behavior for data files</dt>
+<dd>
+The old default behavior was to advise the file system that access would be
+random for data files, and there was no way to alter that. We no longer
+call advise the file system of expected access patterns by default, and
+have added a new \c access_pattern_hint configuration option available for
+WT_SESSION::create that can be used to restore the old default by setting
+the value to "random".
+</dd>
+
+</dl><hr>
+@section version_290 Upgrading to Version 2.9.0
+<dl>
+
+<dt>Changes to cursor behavior after WT_CURSOR::insert</dt>
+<dd>
+After a successful call to WT_CURSOR::insert, unless a cursor has record
+number keys and was configured with "append=true", the cursor's key is
+cleared and a subsequent call to the WT_CURSOR::get_key method will fail.
+In all cursors, the value is cleared and a subsequent call to
+WT_CURSOR::get_value will fail.
+</dd>
+
+<dt>Cache management defaults</dt>
+<dd>
+The default values for the \c eviction_dirty_target and \c
+eviction_dirty_trigger settings to ::wiredtiger_open have changed to 5 and 20,
+respectively.  This means that by default, WiredTiger will start writing dirty
+pages from cache when it becomes 5% dirty and will throttle activity to keep
+the volume of dirty data in cache under 20%.  For write-heavy workloads, the
+new defaults may result in lower throughput and more threads writing to data
+files concurrently.
+
+There is also a new \c eviction_checkpoint_target setting that determines
+how much work is done at the beginning of a checkpoint to make the critical
+section of checkpoints complete more quickly.
+</dd>
+
+<dt>Change to default fadvise setting for data files</dt>
+<dd>
+The default behavior for data files was to advise the file system to optimize
+for random access on POSIX and Windows platforms. The default is now to not
+advise about access patterns. There is a new \c access_pattern_hint
+configuration string available to WT_SESSION::create that can be used
+to configure the old default behavior.
+</dd>
+
+<dt>Checkpoint server created checkpoint names</dt>
+<dd>
+The ::wiredtiger_open checkpoint configuration no longer supports the
+\c name configuration, and checkpoint server created checkpoints will
+always be named the default WiredTiger checkpoint name,
+"WiredTigerCheckpoint". Applications depending on the ability to set the
+checkpoint name for the checkpoint server will require modification.
+</dd>
+
+<dt>Statistics logging path</dt>
+<dd>
+The ::wiredtiger_open statistics logging path configuration has been
+simplified to be only a path to a directory, and the file name component
+of the path may no longer be specified. Applications depending on the
+ability to set statistics log file names will require modification.
+</dd>
+
+<dt>Removed and renamed statistics fields</dt>
+<dd>
+WT_STAT_JOIN_ACTUAL_COUNT is renamed to WT_STAT_JOIN_ITERATED
+
+WT_STAT_CONN_CACHE_BYTES_OVERFLOW removed since overflow pages are not cached
+
+WT_STAT_CONN_CACHE_EVICTION_SERVER_NOT_EVICTING removed since all eviction threads can now be the server
+</dd>
+
+</dl><hr>
+@section version_280 Upgrading to Version 2.8.0
+<dl>
+<dt>LSM metadata</dt>
+<dd>
+There is a change to the format of LSM metadata in this release to fix bugs
+in dump / load of tables of type LSM.  Tables created with the old LSM metadata
+format will be upgraded automatically, but once updated to the new version
+<b>are no longer compatible with older releases of WiredTiger</b>.
+</dd>
+
+<dt>Column-store bulk-load cursors</dt>
+<dd>
+Historically, bulk-load of a column-store object ignored any key set in the
+cursor and automatically assigned each inserted row the next sequential
+record number for its key. In the 2.8.0 release, column-store objects match
+row-store behavior and require the cursor key be set before an insert.
+(This allows sparse tables to be created in column-store objects, any
+skipped records are created as already-deleted rows.) To match the previous
+behavior, specify the \c append configuration string when opening the
+column-store bulk-load cursor; this causes the cursor's key to be ignored
+and each inserted row will be assigned the next record number.
+</dd>
+
+<dt>Change to WT_SESSION::truncate with URI</dt>
+<dd>
+If using the WT_SESSION::truncate API with a file: URI for a full table
+truncate, underlying algorithmic changes result in some visible
+differences.  This call can now return WT_ROLLBACK.  Applications should be
+prepared to handle this error.  This method no longer requires exclusive
+access to the table.  Also the underlying disk space may not be immediately
+reclaimed when the call returns.  The performance of this API may differ
+from earlier releases.
+</dd>
+
+<dt>Bzip2 compression support</dt>
+<dd>
+Support for the bzip2 compression/decompression engine has been removed
+from the WiredTiger release; remaining compression engines include LZ4,
+snappy and zlib.
+</dd>
+
+<dt>Change to named checkpoints with bulk loads</dt>
+<dd>
+Previous versions of WiredTiger created empty named checkpoints in files
+being bulk-loaded.  In this release, checkpoint skips files being
+bulk-loaded, so they do not get named checkpoints that complete during the
+bulk load.
+</dd>
+
+<dt>Remove WT_LSN structure from public API</dt>
+<dd>
+The WiredTiger public API used to define a structure that could encapsulate
+log sequence numbers. That structure is no longer exposed publicly.
+</dd>
+
+</dl><hr>
+@section version_270 Upgrading to Version 2.7.0
+
+<dl>
+<dt>Change to config_base=false</dt>
+<dd>
+If \c config_base=false in the config passed directly to ::wiredtiger_open,
+any existing base configuration file will now be ignored.  If an application
+was relying on this behavior, a connection will be opened with different
+settings after upgrading, which could lead to errors or unexpected behavior.
+</dd>
+
+<dt>Statistic change</dt>
+<dd>
+The statistic "pages split during eviction" was replaced. It has been
+replaced by a pair of statistics "internal pages split during eviction" and
+"leaf pages split during eviction".
+</dd>
+
+<dt>Change to WT_CURSOR::insert</dt>
+<dd>
+The WT_CURSOR::insert method in this release has slightly different semantics
+with respect to referencing application memory. In previous releases,
+WT_CURSOR::insert continued to reference application-memory specified to
+either WT_CURSOR::set_key or WT_CURSOR::set_value after a successful return,
+which could potentially lead to a core dump if the application freed that
+memory before a subsequent call to a WT_CURSOR:: method without an intermediate
+WT_CURSOR::set_key or WT_CURSOR::set_value call. In the 2.7.0 release,
+WT_CURSOR::insert behaves like the other cursor methods and does not reference
+application memory after a successful return. Applications depending on the
+previous semantic will require modifications to set the cursor's key and/or
+value after a successful WT_CURSOR::insert call.
+</dd>
+
+<dt>WT_SESSION.verify</dt>
+<dd>
+The WT_SESSION.verify method in this release has a new configuration
+option, \c strict. By default, with \c strict set to \c false,
+WT_SESSION.verify will no longer return an error for problems that do
+not impact the future use of the object (for example, if a leaked block
+were detected, the application can continue to run).  WT_SESSION.verify
+will continue to output an error message whenever an error is detected,
+only the final return value is affected.  This change allows
+applications to verify objects and continue if at all possible.
+Applications in development should configure \c strict to \c true in
+order to terminate the application whenever an error is detected.
+</dd>
+
+</dl><hr>
 @section version_261 Upgrading to Version 2.6.1
 
 <dl>
@@ -133,7 +405,7 @@ be updated.
 The WT_SESSION::create \c internal_item_max and \c leaf_item_max
 configuration strings are now deprecated in favor of the
 \c internal_key_max, \c leaf_key_max, and \c leaf_value_max
-configuration strings. See @ref tune_page_sizes for more information.
+configuration strings. See @ref tune_page_size_and_comp for more information.
 </dd>
 
 </dl><hr>
@@ -418,7 +690,7 @@ statistics will be logged to the file; if the database is configured
 with "all" or "fast", the corresponding statistics will be logged to the
 file.
 
-In previous releases, the WT_SESSION::cursor method took 
+In previous releases, the WT_SESSION::cursor method took
 \c statistics_clear and a \c statistics_fast configurations.  The
 \c statistics_clear configuration defaulted to false; when set to true,
 statistics counters were reset after they were gathered by the cursor.

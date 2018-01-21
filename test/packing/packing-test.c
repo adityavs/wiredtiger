@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2015 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -26,32 +26,32 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <assert.h>
-
-#include "wt_internal.h"			/* For __wt_XXX */
+#include "test_util.h"
 
 static void
 check(const char *fmt, ...)
 {
+	size_t len;
 	char buf[200], *end, *p;
 	va_list ap;
-	size_t len;
 
 	len = 0;			/* -Werror=maybe-uninitialized */
 
 	va_start(ap, fmt);
-	assert(__wt_struct_sizev(NULL, &len, fmt, ap) == 0);
+	testutil_check(__wt_struct_sizev(NULL, &len, fmt, ap));
 	va_end(ap);
 
-	assert(len < sizeof(buf));
+	if (len < 1 || len >= sizeof(buf))
+		testutil_die(EINVAL,
+		    "Unexpected length from __wt_struct_sizev");
 
 	va_start(ap, fmt);
-	assert(__wt_struct_packv(NULL, buf, sizeof(buf), fmt, ap) == 0);
+	testutil_check(__wt_struct_packv(NULL, buf, sizeof(buf), fmt, ap));
 	va_end(ap);
 
 	printf("%s ", fmt);
 	for (p = buf, end = p + len; p < end; p++)
-		printf("%02x", *p & 0xff);
+		printf("%02x", (u_char)*p & 0xff);
 	printf("\n");
 }
 
@@ -61,6 +61,7 @@ main(void)
 	check("iii", 0, 101, -99);
 	check("3i", 0, 101, -99);
 	check("iS", 42, "forty two");
+	check("s", "a big string");
 #if 0
 	/* TODO: need a WT_ITEM */
 	check("u", r"\x42" * 20)

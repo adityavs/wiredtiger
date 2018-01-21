@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -26,8 +26,9 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-import os, subprocess
+import os, subprocess, sys
 from run import wt_builddir
+from wttest import WiredTigerTestCase
 
 # suite_subprocess.py
 #    Run a subprocess within the test suite
@@ -117,23 +118,53 @@ class suite_subprocess:
             print 'ERROR: ' + filename + ' should not be empty (this command expected error output)'
         self.assertNotEqual(filesize, 0, filename + ': expected to not be empty')
 
-    def runWt(self, args, infilename=None, outfilename=None, errfilename=None, reopensession=True):
-        """
-        Run the 'wt' process
-        """
+    def verbose_env(self, envvar):
+        return envvar + '=' + str(os.environ.get(envvar)) + '\n'
 
-        # we close the connection to guarantee everything is
-        # flushed, and that we can open it from another process
-        self.close_conn()
+    def show_outputs(self, procargs, message, filenames):
+        out = 'ERROR: wt command ' + message + ': ' + str(procargs) + '\n' + \
+              self.verbose_env('PATH') + \
+              self.verbose_env('LD_LIBRARY_PATH') + \
+              self.verbose_env('DYLD_LIBRARY_PATH') + \
+              self.verbose_env('PYTHONPATH') + \
+              'output files follow:'
+        WiredTigerTestCase.prout(out)
+        for filename in filenames:
+            maxbytes = 1024*100
+            with open(filename, 'r') as f:
+                contents = f.read(maxbytes)
+                if len(contents) > 0:
+                    if len(contents) >= maxbytes:
+                        contents += '...\n'
+                    sepline = '*' * 50 + '\n'
+                    out = sepline + filename + '\n' + sepline + contents
+                    WiredTigerTestCase.prout(out)
+
+    # Run the wt utility.
+    def runWt(self, args, infilename=None,
+        outfilename=None, errfilename=None, closeconn=True,
+        reopensession=True, failure=False):
+
+        # Close the connection to guarantee everything is flushed, and that
+        # we can open it from another process.
+        if closeconn:
+            self.close_conn()
 
         wtoutname = outfilename or "wt.out"
         wterrname = errfilename or "wt.err"
         with open(wterrname, "w") as wterr:
             with open(wtoutname, "w") as wtout:
-                procargs = [os.path.join(wt_builddir, "wt")]
+                # Prefer running the actual 'wt' executable rather than the
+                # 'wt' script created by libtool. On OS/X with System Integrity
+                # Protection enabled, running a shell script strips
+                # environment variables needed to run 'wt'.
+                if sys.platform == "darwin":
+                    wtexe = os.path.join(wt_builddir, ".libs", "wt")
+                else:
+                    wtexe = os.path.join(wt_builddir, "wt")
+                procargs = [ wtexe ]
                 if self._gdbSubprocess:
-                    procargs = [os.path.join(wt_builddir, "libtool"),
-                                "--mode=execute", "gdb", "--args"] + procargs
+                    procargs = [ "gdb", "--args" ] + procargs
                 procargs.extend(args)
                 if self._gdbSubprocess:
                     infilepart = ""
@@ -141,19 +172,37 @@ class suite_subprocess:
                         infilepart = "<" + infilename + " "
                     print str(procargs)
                     print "*********************************************"
-                    print "**** Run 'wt' via: run " + " ".join(procargs[3:]) + infilepart + ">" + wtoutname + " 2>" + wterrname
+                    print "**** Run 'wt' via: run " + \
+                        " ".join(procargs[3:]) + infilepart + \
+                        ">" + wtoutname + " 2>" + wterrname
                     print "*********************************************"
-                    subprocess.call(procargs)
+                    returncode = subprocess.call(procargs)
                 elif infilename:
                     with open(infilename, "r") as wtin:
-                        subprocess.call(procargs, stdin=wtin, stdout=wtout, stderr=wterr)
+                        returncode = subprocess.call(
+                            procargs, stdin=wtin, stdout=wtout, stderr=wterr)
                 else:
-                    subprocess.call(procargs, stdout=wtout, stderr=wterr)
+                    returncode = subprocess.call(
+                        procargs, stdout=wtout, stderr=wterr)
+        if failure:
+            if returncode == 0:
+                self.show_outputs(procargs, "expected failure, got success",
+                                  [wtoutname, wterrname])
+            self.assertNotEqual(returncode, 0,
+                'expected failure: "' + \
+                str(procargs) + '": exited ' + str(returncode))
+        else:
+            if returncode != 0:
+                self.show_outputs(procargs, "expected success, got failure",
+                                  [wtoutname, wterrname])
+            self.assertEqual(returncode, 0,
+                'expected success: "' + \
+                str(procargs) + '": exited ' + str(returncode))
         if errfilename == None:
             self.check_empty_file(wterrname)
         if outfilename == None:
             self.check_empty_file(wtoutname)
 
         # Reestablish the connection if needed
-        if reopensession:
+        if reopensession and closeconn:
             self.open_conn()

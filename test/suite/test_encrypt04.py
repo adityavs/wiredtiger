@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -32,7 +32,7 @@
 
 import os, run, random
 import wiredtiger, wttest
-from wtscenario import multiply_scenarios, number_scenarios
+from wtscenario import make_scenarios
 from suite_subprocess import suite_subprocess
 
 # Test basic encryption with mismatched configuration
@@ -42,24 +42,34 @@ class test_encrypt04(wttest.WiredTigerTestCase, suite_subprocess):
 
     # For tests that are mismatching, we use a secretkey. The 'rotn'
     # encryptor without a secretkey is too simple, and may leave
-    # substantional portions of its input unchanged - a root page decoded
+    # substantial portions of its input unchanged - a root page decoded
     # with simply the wrong keyid may appear valid when initially verified,
     # but may result in error on first use. The odds that a real encryptor
     # would leave a lot of its input unchanged is infinitesimally small.
+    #
+    # When both self.forceerror1 and self.forceerror2 occur, we set a config
+    # flag when loading the rotn encryptor, which forces a particular error
+    # return in rotn.decrypt. We look for that return back from
+    # wiredtiger_open.
     encrypt_scen_1 = [
         ('none', dict( name1='none', keyid1='', secretkey1='')),
-        ('rotn17abc', dict( name1='rotn', keyid1='17', secretkey1='ABC')),
+        ('rotn17abc', dict( name1='rotn', keyid1='17',
+                                      secretkey1='ABC', forceerror1=True)),
         ('rotn11abc', dict( name1='rotn', keyid1='11', secretkey1='ABC')),
-        ('rotn11xyz', dict( name1='rotn', keyid1='11', secretkey1='XYZ'))
+        ('rotn11xyz', dict( name1='rotn', keyid1='11', secretkey1='XYZ')),
+        ('rotn11xyz_and_clear', dict( name1='rotn', keyid1='11',
+                                      secretkey1='XYZ', fileinclear1=True))
     ]
     encrypt_scen_2 = [
         ('none', dict( name2='none', keyid2='', secretkey2='')),
         ('rotn17abc', dict( name2='rotn', keyid2='17', secretkey2='ABC')),
         ('rotn11abc', dict( name2='rotn', keyid2='11', secretkey2='ABC')),
-        ('rotn11xyz', dict( name2='rotn', keyid2='11', secretkey2='XYZ'))
+        ('rotn11xyz', dict( name2='rotn', keyid2='11',
+                                      secretkey2='XYZ', forceerror2=True)),
+        ('rotn11xyz_and_clear', dict( name2='rotn', keyid2='11',
+                                      secretkey2='XYZ', fileinclear2=True))
     ]
-    scenarios = number_scenarios(multiply_scenarios \
-                                 ('.', encrypt_scen_1, encrypt_scen_2))
+    scenarios = make_scenarios(encrypt_scen_1, encrypt_scen_2)
     nrecords = 5000
     bigvalue = "abcdefghij" * 1001    # len(bigvalue) = 10010
 
@@ -67,25 +77,49 @@ class test_encrypt04(wttest.WiredTigerTestCase, suite_subprocess):
         wttest.WiredTigerTestCase.__init__(self, *args, **kwargs)
         self.part = 1
 
+    def conn_extensions(self, extlist):
+        extarg = None
+        if self.expect_forceerror:
+            extarg='(config=\"rotn_force_error=true\")'
+        extlist.skip_if_missing = True
+        extlist.extension('encryptors', self.name, extarg)
+
     # Override WiredTigerTestCase, we have extensions.
     def setUpConnectionOpen(self, dir):
+        self.expect_forceerror = False
         if self.part == 1:
             self.name = self.name1
             self.keyid = self.keyid1
             self.secretkey = self.secretkey1
+            self.fileinclear = self.fileinclear1 if \
+                               hasattr(self, 'fileinclear1') else False
         else:
             self.name = self.name2
             self.keyid = self.keyid2
             self.secretkey = self.secretkey2
+            self.fileinclear = self.fileinclear2 if \
+                               hasattr(self, 'fileinclear2') else False
+            if hasattr(self, 'forceerror1') and hasattr(self, 'forceerror2'):
+                self.expect_forceerror = True
+        self.got_forceerror = False
 
         encarg = 'encryption=(name={0},keyid={1},secretkey={2}),'.format(
             self.name, self.keyid, self.secretkey)
-        extarg = self.extensionArg([('encryptors', self.name),
-            ('encryptors', self.name)])
+        # If forceerror is set for this test, conn_extensions adds a
+        # config arg to the extension string. That signals rotn to
+        # return a (-1000) error code, which we'll detect here.
+        extarg = self.extensionsConfig()
         self.pr('encarg = ' + encarg + ' extarg = ' + extarg)
-        conn = wiredtiger.wiredtiger_open(dir,
-            'create,error_prefix="{0}: ",{1}{2}'.format(
-                self.shortid(), encarg, extarg))
+        completed = False
+        try:
+            conn = self.wiredtiger_open(dir,
+                'create,error_prefix="{0}",{1}{2}'.format(
+                 self.shortid(), encarg, extarg))
+        except (BaseException) as err:
+            # Capture the recognizable error created by rotn
+            if str(-1000) in str(err):
+                self.got_forceerror = True
+            raise
         self.pr(`conn`)
         return conn
 
@@ -107,29 +141,30 @@ class test_encrypt04(wttest.WiredTigerTestCase, suite_subprocess):
             self.assertEqual(cursor.search(), 0)
             self.assertEquals(cursor.get_value(), val)
 
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, exts):
-        extfiles = []
-        for ext in exts:
-            (dirname, name) = ext
-            if name != None and name != 'none':
-                testdir = os.path.dirname(__file__)
-                extdir = os.path.join(run.wt_builddir, 'ext', dirname)
-                extfile = os.path.join(
-                    extdir, name, '.libs', 'libwiredtiger_' + name + '.so')
-                if not os.path.exists(extfile):
-                    self.skipTest('extension "' + extfile + '" not built')
-                if not extfile in extfiles:
-                    extfiles.append(extfile)
-        if len(extfiles) == 0:
-            return ''
+    # Evaluate expression, which either must succeed (if expect_okay)
+    # or must fail (if !expect_okay).
+    def check_okay(self, expect_okay, expr):
+        completed = False
+        if expect_okay:
+            expr()
         else:
-            return ',extensions=["' + '","'.join(extfiles) + '"]'
+            # expect an error, and maybe error messages,
+            # so turn off stderr checking.
+            with self.expectedStderrPattern(''):
+                try:
+                    expr()
+                    completed = True
+                except:
+                    pass
+                self.assertEqual(False, completed)
+        return expect_okay
 
     # Create a table with encryption values that are in error.
     def test_encrypt(self):
         params = 'key_format=S,value_format=S'
-        if self.name != None:
+        if self.name == 'none' or self.fileinclear:
+            params += ',encryption=(name=none)'
+        else:
             params += ',encryption=(name=' + self.name + \
                       ',keyid=' + self.keyid + ')'
 
@@ -140,35 +175,23 @@ class test_encrypt04(wttest.WiredTigerTestCase, suite_subprocess):
         self.create_records(cursor, r, 0, self.nrecords)
         cursor.close()
 
-        # Now intentially expose the test to mismatched configuration
+        # Now intentionally expose the test to mismatched configuration
         self.part = 2
         self.name = self.name2
         self.keyid = self.keyid2
-        self.secretkey = self.secretkey
+        self.secretkey = self.secretkey2
 
         is_same = (self.name1 == self.name2 and
                    self.keyid1 == self.keyid2 and
                    self.secretkey1 == self.secretkey2)
 
         # We expect an error if we specified different
-        # encryption from one open to the next.  The exception
-        # is when we started out with no encryption,
-        # we can still enable encryption and read existing files.
-        expect_error = not is_same and self.name1 != 'none'
+        # encryption from one open to the next.
+        expect_okay = is_same
 
-        if expect_error:
-            completed = False
-            with self.expectedStderrPattern(''):   # effectively ignore stderr
-                try:
-                    self.reopen_conn()
-                    completed = True
-                except:
-                    pass
-                self.assertEqual(False, completed)
-        else:
-            # Force the cache to disk, so we read
-            # compressed/encrypted pages from disk.
-            self.reopen_conn()
+        # Force the cache to disk, so we read
+        # compressed/encrypted pages from disk.
+        if self.check_okay(expect_okay, lambda: self.reopen_conn()):
             cursor = self.session.open_cursor(self.uri, None)
             r.seed(0)
             self.check_records(cursor, r, 0, self.nrecords)
@@ -188,7 +211,7 @@ class test_encrypt04(wttest.WiredTigerTestCase, suite_subprocess):
                 self.check_records(cursor, r, 0, self.nrecords)
                 self.check_records(cursor, r, self.nrecords, self.nrecords * 2)
             cursor.close()
-        
+        self.assertEqual(self.expect_forceerror, self.got_forceerror)
 
 if __name__ == '__main__':
     wttest.run()

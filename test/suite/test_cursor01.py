@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Public Domain 2014-2015 MongoDB, Inc.
+# Public Domain 2014-2017 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -27,7 +27,7 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 
 import wiredtiger, wttest
-from wtscenario import check_scenarios
+from wtscenario import make_scenarios
 
 # test_cursor01.py
 #    Cursor operations
@@ -41,7 +41,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
     table_name1 = 'test_cursor01'
     nentries = 10
 
-    scenarios = check_scenarios([
+    scenarios = make_scenarios([
         ('file-col', dict(tablekind='col',uri='file')),
         ('file-fix', dict(tablekind='fix',uri='file')),
         ('file-row', dict(tablekind='row',uri='file')),
@@ -99,6 +99,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
         self.pr('creating cursor')
         cursor = self.session.open_cursor(tablearg, None, None)
         self.assertCursorHasNoKeyValue(cursor)
+        self.assertEqual(cursor.uri, tablearg)
 
         for i in range(0, self.nentries):
             cursor[self.genkey(i)] = self.genvalue(i)
@@ -167,7 +168,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
     def backward_iter(self, cursor):
         cursor.reset()
         self.assertCursorHasNoKeyValue(cursor)
-        
+
         i = self.nentries - 1
         while True:
             prevret = cursor.prev()
@@ -188,7 +189,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
     def backward_iter_with_dup(self, cursor):
         cursor.reset()
         self.assertCursorHasNoKeyValue(cursor)
-        
+
         i = self.nentries - 1
         while True:
             prevret = cursor.prev()
